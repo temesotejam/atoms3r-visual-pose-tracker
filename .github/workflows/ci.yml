@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    name: PlatformIO firmware build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+
+      - name: Run dictionary tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build AtomS3R-CAM firmware
+        run: pio run -e atoms3r_cam
+
+      - name: Upload raw build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: atoms3r-cam-build
+          path: |
+            .pio/build/atoms3r_cam/firmware.bin
+            .pio/build/atoms3r_cam/bootloader.bin
+            .pio/build/atoms3r_cam/partitions.bin
+          if-no-files-found: error

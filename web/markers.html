@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Test Markers · AtomS3R Visual Pose Tracker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="shell">
+    <a class="back" href="./">← 書き込みページ</a>
+    <section class="hero compact">
+      <p class="eyebrow">OpenCV DICT_4X4_50</p>
+      <h1>Test Markers</h1>
+      <p class="lead">
+        初期設定は黒い外枠を含む正方形が50 mmです。
+        印刷ダイアログは「実際のサイズ / 100%」を使ってください。
+      </p>
+      <button class="secondary" onclick="window.print()">印刷する</button>
+    </section>
+    <section id="markers" class="marker-grid"></section>
+  </main>
+
+<script>
+const markerSizeMm = 50;
+const codes = [
+  { id: 0, word: 0xB532 },
+  { id: 1, word: 0x0F9A },
+];
+
+function bit(word, r, c) {
+  const shift = 15 - (r * 4 + c);
+  return (word >> shift) & 1;
+}
+
+function markerSvg(code) {
+  const n = 6;
+  const cell = 10;
+  const size = n * cell;
+  let rects = `<rect width="${size}" height="${size}" fill="white"/>`;
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const border = r === 0 || r === 5 || c === 0 || c === 5;
+      const black = border || (r > 0 && r < 5 && c > 0 && c < 5 &&
+                    bit(code.word, r - 1, c - 1) === 0);
+      if (black) {
+        rects += `<rect x="${c*cell}" y="${r*cell}" width="${cell}" height="${cell}" fill="black"/>`;
+      }
+    }
+  }
+  return `<svg viewBox="0 0 ${size} ${size}"
+    style="width:${markerSizeMm}mm;height:${markerSizeMm}mm"
+    shape-rendering="crispEdges" aria-label="ArUco marker ID ${code.id}">
+    ${rects}
+  </svg>`;
+}
+
+document.getElementById("markers").innerHTML = codes.map(code => `
+  <article class="marker-card">
+    ${markerSvg(code)}
+    <h2>ID ${code.id}</h2>
+    <p>DICT_4X4_50 · ${markerSizeMm} mm</p>
+  </article>
+`).join("");
+</script>
+</body>
+</html>

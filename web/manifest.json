@@ -1,0 +1,16 @@
+{
+  "name": "AtomS3R Visual Pose Tracker",
+  "version": "dev",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "firmware/atoms3r-visual-pose-tracker.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
