@@ -147,35 +147,9 @@ void setup() {
     Serial.begin(921600);
     delay(300);
 
-    auto cfg = M5.config();
-
-    // This target only needs the onboard BMI270 from M5Unified. Disable the
-    // optional external peripherals so Port.A I2C is not needlessly used.
-    cfg.external_display_value = 0;
-    cfg.external_speaker_value = 0;
-    cfg.external_imu = false;
-    cfg.external_rtc = false;
-    cfg.internal_mic = false;
-    cfg.internal_spk = false;
-    M5.begin(cfg);
-
-    // AtomS3R-CAM uses two ESP32-S3 hardware I2C controllers in M5Unified:
-    //   I2C1 = internal bus (GPIO45 SDA / GPIO0 SCL) -> BMI270
-    //   I2C0 = external Port.A (GPIO2 SDA / GPIO1 SCL)
-    // esp32-camera's SCCB driver also defaults to I2C0 and installs its own
-    // driver on GPIO12 SDA / GPIO9 SCL. Release only M5Unified's external
-    // I2C controller before camera init; the internal BMI270 bus stays alive.
-    const bool external_i2c_released = M5.Ex_I2C.release();
-
-    // M5Unified can reconfigure USB serial during begin().
-    Serial.begin(921600);
-    delay(100);
-
     Serial.println();
     Serial.println("AtomS3R Visual Pose Tracker boot");
-    Serial.printf("M5 board=%d, external I2C release=%s\n",
-                  static_cast<int>(M5.getBoard()),
-                  external_i2c_released ? "ok" : "not-owned/already-free");
+    Serial.println("Init order: camera I2C0 first, BMI270 I2C1 second");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
@@ -187,9 +161,29 @@ void setup() {
         while (true) delay(1000);
     }
 
+    // Important: do not call M5.begin() here. On AtomS3R-CAM its display/
+    // board-detection path can touch hardware I2C0 before esp32-camera owns
+    // the GC0308 SCCB bus. The camera SCCB pins are GPIO12 SDA / GPIO9 SCL
+    // and esp32-camera uses hardware I2C0 by default, so claim it first.
     if (!g_camera.begin()) {
         Serial.printf("FATAL: camera init: %s\n", g_camera.lastError());
         while (true) delay(1000);
+    }
+    Serial.println("CAMERA READY: GC0308 SCCB owns I2C0");
+
+    // Bring up only the onboard BMI270 from M5Unified, without running the
+    // full M5.begin() auto-detection stack. AtomS3R-CAM internal I2C wiring:
+    //   I2C1, SDA=GPIO45, SCL=GPIO0.
+    // Passing the explicit board type preserves M5Unified's AtomS3R axis map.
+    M5.In_I2C.setPort(I2C_NUM_1, GPIO_NUM_45, GPIO_NUM_0);
+    const bool imu_ok =
+        M5.Imu.begin(&M5.In_I2C, m5::board_t::board_M5AtomS3RCam);
+
+    Serial.printf("IMU init=%s, type=%d\n",
+                  imu_ok ? "ok" : "failed",
+                  static_cast<int>(M5.Imu.getType()));
+    if (!imu_ok || !M5.Imu.isEnabled()) {
+        Serial.println("WARNING: BMI270 unavailable; vision will continue without IMU");
     }
 
     const BaseType_t created = xTaskCreatePinnedToCore(
