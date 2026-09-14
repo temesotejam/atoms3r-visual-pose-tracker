@@ -15,7 +15,7 @@ public:
 
 private:
     RectI computeSearchRoi(uint64_t frame_timestamp_us) const;
-    RectI intersectWithLane(const RectI& r) const;
+    RectI clampToFrame(const RectI& r) const;
 
     int _id;
     RectI _lane;
