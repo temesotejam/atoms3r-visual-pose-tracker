@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AtomS3R Visual Pose Tracker</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module">
+  </script>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <p class="eyebrow">AtomS3R-CAM / GC0308</p>
+      <h1>Visual Pose Tracker</h1>
+      <p class="lead">
+        2個の ArUco DICT_4X4_50 マーカーを、縦方向の既知レーンから捕捉して
+        小さなROIで追跡する実験ファームウェアです。
+      </p>
+    </section>
+
+    <section class="card install">
+      <div>
+        <p class="step">01 · Firmware</p>
+        <h2>ブラウザから書き込む</h2>
+        <p>
+          AtomS3R-CAMをUSBで接続し、下のボタンから書き込みます。
+          Chrome / Edge のWeb Serialを使用します。
+        </p>
+      </div>
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate" class="primary">接続して書き込む</button>
+        <p slot="unsupported" class="warn">
+          このブラウザはWeb Serialに対応していません。ChromeまたはEdgeを使用してください。
+        </p>
+        <p slot="not-allowed" class="warn">
+          HTTPSページから開いてください。
+        </p>
+      </esp-web-install-button>
+      <div class="hint">
+        書き込みモード: Resetを約2秒長押し → 内部の緑LED点灯 → 離す。
+      </div>
+    </section>
+
+    <section class="grid">
+      <a class="card link-card" href="markers.html">
+        <p class="step">02 · Markers</p>
+        <h2>テスト用マーカー</h2>
+        <p>ID 0 / ID 1を実寸で印刷できます。</p>
+        <span>開く →</span>
+      </a>
+      <a class="card link-card" href="https://github.com/temesotejam/atoms3r-visual-pose-tracker">
+        <p class="step">03 · Source</p>
+        <h2>GitHub</h2>
+        <p>設定値、シリアル出力、ビルド状態を確認します。</p>
+        <span>Repository →</span>
+      </a>
+    </section>
+
+    <section class="card">
+      <p class="step">Current prototype</p>
+      <div class="specs">
+        <div><b>Camera</b><span>320×240 / grayscale / 15 fps target</span></div>
+        <div><b>Markers</b><span>DICT_4X4_50 ID 0 + ID 1</span></div>
+        <div><b>Tracking</b><span>vertical lane → predicted ROI → recovery</span></div>
+        <div><b>IMU loop</b><span>BMI270, 200 Hz task</span></div>
+        <div><b>Output</b><span>921600 baud JSON</span></div>
+      </div>
+      <p class="small">
+        XYZ / 3D角度はカメラ内部パラメータを実機キャリブレーションするまで概算値です。
+        最初は center_y_px、image_angle_deg、処理時間、見失い状態を確認してください。
+      </p>
+    </section>
+  </main>
+</body>
+</html>
