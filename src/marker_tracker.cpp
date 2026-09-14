@@ -7,12 +7,6 @@
 #include "marker_detector.h"
 #include "pose_estimator.h"
 
-namespace {
-int clampi(int v, int lo, int hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-}
-
 MarkerTracker::MarkerTracker(int marker_id, const RectI& lane,
                              MarkerDetector& detector,
                              const PoseEstimator& estimator)
@@ -87,12 +81,15 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
         return obs;
     }
 
-    // Dictionary rotation tells which CCW rotation of the canonical code was
-    // observed. Shift the geometric TL/TR/BR/BL corners so corner[0] is the
-    // physical marker's canonical top-left.
+    // `rotation` is the CCW rotation of the canonical dictionary bits that
+    // matches the image. To recover the physical marker's canonical corner
+    // order we must rotate the geometric TL/TR/BR/BL indices in the opposite
+    // direction. Example: a marker observed 90 deg CCW has its canonical TL
+    // at the image's BL corner.
     Point2f canonical[4];
+    const int corner_shift = (4 - (obs.rotation & 3)) & 3;
     for (int i = 0; i < 4; ++i) {
-        canonical[i] = obs.corners[(i + obs.rotation) & 3];
+        canonical[i] = obs.corners[(i + corner_shift) & 3];
     }
     for (int i = 0; i < 4; ++i) obs.corners[i] = canonical[i];
 
