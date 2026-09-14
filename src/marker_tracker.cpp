@@ -30,7 +30,24 @@ RectI MarkerTracker::intersectWithLane(const RectI& in) const {
 
 RectI MarkerTracker::computeSearchRoi(uint64_t frame_timestamp_us) const {
     if (!_have_track || _misses >= appcfg::kMaxMissesBeforeLaneAcquire) {
-        return _lane;
+        // `_lane` describes the expected path of the marker center, not a hard
+        // crop boundary for the entire square. If the square straddles the
+        // boundary (the old defaults meet near image x=160), clipping the
+        // black border destroys the ArUco payload before decode. Expand only
+        // the acquisition ROI in X; after a lock we immediately return to the
+        // much smaller predicted tracking ROI below.
+        const int guard = appcfg::kAcquireLaneGuardPx;
+        int x0 = _lane.x - guard;
+        int x1 = _lane.x + _lane.w + guard;
+        if (x0 < 0) x0 = 0;
+        if (x1 > appcfg::kFrameWidth) x1 = appcfg::kFrameWidth;
+
+        int y0 = _lane.y;
+        int y1 = _lane.y + _lane.h;
+        if (y0 < 0) y0 = 0;
+        if (y1 > appcfg::kFrameHeight) y1 = appcfg::kFrameHeight;
+
+        return RectI{x0, y0, x1 - x0, y1 - y0};
     }
 
     float dt = 0.0f;

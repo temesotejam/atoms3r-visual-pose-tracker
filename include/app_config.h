@@ -37,6 +37,12 @@ static constexpr int kLaneBY = 0;
 static constexpr int kLaneBW = 170;
 static constexpr int kLaneBH = 240;
 
+// A lane describes where the marker CENTER is expected to move. During
+// acquisition the image-search ROI is expanded beyond the lane so that a
+// marker near a lane boundary is not cut in half before its ID is decoded.
+// 96 px is slightly more than half of kMaxMarkerSidePx (180 px).
+static constexpr int kAcquireLaneGuardPx = 96;
+
 // Tracking ROI around the predicted center.
 static constexpr int kTrackMarginXPx = 24;
 static constexpr int kTrackMarginYPx = 52;

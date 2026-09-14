@@ -13,7 +13,8 @@
       <p class="eyebrow">OpenCV DICT_4X4_50</p>
       <h1>Test Markers</h1>
       <p class="lead">
-        初期設定は黒い外枠を含む正方形が50 mmです。
+        黒いマーカー本体（外枠を含む正方形）が50 mmです。
+        周囲の白い余白は認識用のQuiet Zoneなので切り落とさないでください。
         印刷ダイアログは「実際のサイズ / 100%」を使ってください。
       </p>
       <button class="secondary" onclick="window.print()">印刷する</button>
@@ -34,22 +35,27 @@ function bit(word, r, c) {
 }
 
 function markerSvg(code) {
-  const n = 6;
+  const markerCells = 6;       // 1 black border + 4 payload + 1 black border
+  const quietCells = 1;        // explicit white quiet zone on every side
+  const totalCells = markerCells + quietCells * 2;
   const cell = 10;
-  const size = n * cell;
+  const size = totalCells * cell;
+  const markerOffset = quietCells * cell;
+  const printedSizeMm = markerSizeMm * totalCells / markerCells;
+
   let rects = `<rect width="${size}" height="${size}" fill="white"/>`;
-  for (let r = 0; r < n; r++) {
-    for (let c = 0; c < n; c++) {
+  for (let r = 0; r < markerCells; r++) {
+    for (let c = 0; c < markerCells; c++) {
       const border = r === 0 || r === 5 || c === 0 || c === 5;
       const black = border || (r > 0 && r < 5 && c > 0 && c < 5 &&
                     bit(code.word, r - 1, c - 1) === 0);
       if (black) {
-        rects += `<rect x="${c*cell}" y="${r*cell}" width="${cell}" height="${cell}" fill="black"/>`;
+        rects += `<rect x="${markerOffset + c*cell}" y="${markerOffset + r*cell}" width="${cell}" height="${cell}" fill="black"/>`;
       }
     }
   }
   return `<svg viewBox="0 0 ${size} ${size}"
-    style="width:${markerSizeMm}mm;height:${markerSizeMm}mm"
+    style="width:${printedSizeMm}mm;height:${printedSizeMm}mm"
     shape-rendering="crispEdges" aria-label="ArUco marker ID ${code.id}">
     ${rects}
   </svg>`;
@@ -59,7 +65,7 @@ document.getElementById("markers").innerHTML = codes.map(code => `
   <article class="marker-card">
     ${markerSvg(code)}
     <h2>ID ${code.id}</h2>
-    <p>DICT_4X4_50 · ${markerSizeMm} mm</p>
+    <p>DICT_4X4_50 · black square ${markerSizeMm} mm</p>
   </article>
 `).join("");
 </script>
