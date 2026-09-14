@@ -30,8 +30,8 @@ bool CameraDriver::begin() {
     c.pin_pwdn = -1;
     c.pin_reset = -1;
     c.pin_xclk = PIN_CAM_XCLK;
-    c.pin_sscb_sda = PIN_CAM_SDA;
-    c.pin_sscb_scl = PIN_CAM_SCL;
+    c.pin_sccb_sda = PIN_CAM_SDA;
+    c.pin_sccb_scl = PIN_CAM_SCL;
     c.pin_d7 = PIN_CAM_D7;
     c.pin_d6 = PIN_CAM_D6;
     c.pin_d5 = PIN_CAM_D5;
