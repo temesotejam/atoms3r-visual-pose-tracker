@@ -148,7 +148,24 @@ void setup() {
     delay(300);
 
     auto cfg = M5.config();
+
+    // This target only needs the onboard BMI270 from M5Unified. Disable the
+    // optional external peripherals so Port.A I2C is not needlessly used.
+    cfg.external_display_value = 0;
+    cfg.external_speaker_value = 0;
+    cfg.external_imu = false;
+    cfg.external_rtc = false;
+    cfg.internal_mic = false;
+    cfg.internal_spk = false;
     M5.begin(cfg);
+
+    // AtomS3R-CAM uses two ESP32-S3 hardware I2C controllers in M5Unified:
+    //   I2C1 = internal bus (GPIO45 SDA / GPIO0 SCL) -> BMI270
+    //   I2C0 = external Port.A (GPIO2 SDA / GPIO1 SCL)
+    // esp32-camera's SCCB driver also defaults to I2C0 and installs its own
+    // driver on GPIO12 SDA / GPIO9 SCL. Release only M5Unified's external
+    // I2C controller before camera init; the internal BMI270 bus stays alive.
+    const bool external_i2c_released = M5.Ex_I2C.release();
 
     // M5Unified can reconfigure USB serial during begin().
     Serial.begin(921600);
@@ -156,6 +173,9 @@ void setup() {
 
     Serial.println();
     Serial.println("AtomS3R Visual Pose Tracker boot");
+    Serial.printf("M5 board=%d, external I2C release=%s\n",
+                  static_cast<int>(M5.getBoard()),
+                  external_i2c_released ? "ok" : "not-owned/already-free");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
