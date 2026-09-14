@@ -97,6 +97,7 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
     Serial.printf(
         "\"%s\":{\"valid\":%s,\"state\":\"%s\",\"id\":%d,"
         "\"rotation\":%d,\"hamming\":%d,\"quality\":%.3f,"
+        "\"refined\":%s,"
         "\"cx_px\":%.2f,\"cy_px\":%.2f,\"side_px\":%.2f,"
         "\"image_angle_deg\":%.2f,"
         "\"x_m\":%.5f,\"y_m\":%.5f,\"z_m\":%.5f,"
@@ -106,6 +107,7 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         m.valid ? "true" : "false",
         stateName(m.state),
         m.id, m.rotation, m.hamming, m.quality,
+        m.corner_refined ? "true" : "false",
         m.center_x_px, m.center_y_px, m.side_px,
         m.image_angle_deg,
         m.x_m, m.y_m, m.z_m,

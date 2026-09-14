@@ -54,6 +54,17 @@ static constexpr int kMaxMarkerSidePx = 180;
 static constexpr int kMinBlackComponentAreaPx = 90;
 static constexpr int kMaxHammingError = 1;
 
+// Lightweight sub-pixel-ish corner refinement. The coarse connected-component
+// extrema are only used to acquire/decode a marker. Once an ID is accepted,
+// each outer black/white edge is re-measured at several locations, a line is
+// fitted to the edge samples, and adjacent lines are intersected. This is much
+// cheaper than a general-purpose OpenCV cornerSubPix pass and targets the
+// roll/pitch quantization seen in hardware logs with ~30-40 px markers.
+static constexpr int kCornerRefineSamplesPerEdge = 10;
+static constexpr int kCornerRefineSearchRadiusPx = 5;
+static constexpr float kCornerRefineMinContrast = 10.0f;
+static constexpr float kCornerRefineMaxShiftFraction = 0.22f;
+
 // High-rate side of the application. The vision task is deliberately not
 // allowed to dictate this period.
 static constexpr uint32_t kImuControlPeriodUs = 5000; // 200 Hz

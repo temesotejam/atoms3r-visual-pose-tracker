@@ -36,6 +36,12 @@ bool pointsDistinct(const Point2f p[4]) {
     return true;
 }
 
+float clampf(float v, float lo, float hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
 } // namespace
 
 MarkerDetector::MarkerDetector(int frame_width, int frame_height)
@@ -189,6 +195,168 @@ uint8_t MarkerDetector::sampleGray(const uint8_t* gray, float x, float y) const 
     return static_cast<uint8_t>(sum / 9);
 }
 
+bool MarkerDetector::fitRefinedEdge(const uint8_t* gray,
+                                    const Point2f& a, const Point2f& b,
+                                    EdgeLine& line) const {
+    const float ex = b.x - a.x;
+    const float ey = b.y - a.y;
+    const float len = sqrtf(ex*ex + ey*ey);
+    if (len < appcfg::kMinMarkerSidePx * 0.65f) return false;
+
+    const float tx = ex / len;
+    const float ty = ey / len;
+
+    // TL->TR->BR->BL is clockwise in image coordinates (+Y down), so the
+    // right-hand normal points into the marker for each edge.
+    const float nx = -ty;
+    const float ny = tx;
+
+    constexpr int kMaxSamples = 24;
+    Point2f pts[kMaxSamples];
+    int count = 0;
+
+    int samples = appcfg::kCornerRefineSamplesPerEdge;
+    if (samples < 6) samples = 6;
+    if (samples > kMaxSamples) samples = kMaxSamples;
+
+    int radius = appcfg::kCornerRefineSearchRadiusPx;
+    if (radius < 2) radius = 2;
+    const int adaptive_radius =
+        static_cast<int>(clampf(0.14f * len, 2.0f, 7.0f));
+    if (radius > adaptive_radius) radius = adaptive_radius;
+
+    for (int i = 0; i < samples; ++i) {
+        // Avoid the corners themselves; their 2-D neighborhood mixes two
+        // edges and gives a noisier gradient direction.
+        const float u = 0.14f + 0.72f *
+            (static_cast<float>(i) + 0.5f) / samples;
+        const float bx = a.x + ex * u;
+        const float by = a.y + ey * u;
+
+        float best_score = -1.0f;
+        float best_s = 0.0f;
+
+        for (int s = -radius; s <= radius; ++s) {
+            const float sf = static_cast<float>(s);
+            const float outside = static_cast<float>(sampleGray(
+                gray, bx + nx*(sf - 1.0f), by + ny*(sf - 1.0f)));
+            const float inside = static_cast<float>(sampleGray(
+                gray, bx + nx*(sf + 1.0f), by + ny*(sf + 1.0f)));
+
+            // Across the outer marker edge the intensity should fall from
+            // brighter background/paper to the black marker border.
+            const float score = outside - inside;
+            if (score > best_score) {
+                best_score = score;
+                best_s = sf;
+            }
+        }
+
+        if (best_score < appcfg::kCornerRefineMinContrast) continue;
+
+        pts[count++] = {bx + nx*best_s, by + ny*best_s};
+    }
+
+    if (count < 6) return false;
+
+    float mx = 0.0f;
+    float my = 0.0f;
+    for (int i = 0; i < count; ++i) {
+        mx += pts[i].x;
+        my += pts[i].y;
+    }
+    mx /= count;
+    my /= count;
+
+    float sxx = 0.0f;
+    float syy = 0.0f;
+    float sxy = 0.0f;
+    for (int i = 0; i < count; ++i) {
+        const float dx = pts[i].x - mx;
+        const float dy = pts[i].y - my;
+        sxx += dx*dx;
+        syy += dy*dy;
+        sxy += dx*dy;
+    }
+
+    if (sxx + syy < 1.0f) return false;
+
+    const float theta = 0.5f * atan2f(2.0f*sxy, sxx - syy);
+    float dx = cosf(theta);
+    float dy = sinf(theta);
+
+    float alignment = dx*tx + dy*ty;
+    if (alignment < 0.0f) {
+        dx = -dx;
+        dy = -dy;
+        alignment = -alignment;
+    }
+    if (alignment < 0.80f) return false;
+
+    line.p = {mx, my};
+    line.d = {dx, dy};
+    return true;
+}
+
+bool MarkerDetector::intersectLines(const EdgeLine& a, const EdgeLine& b,
+                                    Point2f& out) const {
+    const float cross = a.d.x*b.d.y - a.d.y*b.d.x;
+    if (fabsf(cross) < 0.20f) return false;
+
+    const float qx = b.p.x - a.p.x;
+    const float qy = b.p.y - a.p.y;
+    const float t = (qx*b.d.y - qy*b.d.x) / cross;
+
+    out = {a.p.x + t*a.d.x, a.p.y + t*a.d.y};
+    return true;
+}
+
+bool MarkerDetector::refineCorners(const uint8_t* gray,
+                                   const Point2f coarse[4],
+                                   Point2f refined[4]) const {
+    EdgeLine edges[4];
+    for (int i = 0; i < 4; ++i) {
+        if (!fitRefinedEdge(gray, coarse[i], coarse[(i + 1) & 3],
+                            edges[i])) {
+            return false;
+        }
+    }
+
+    // Corner i is the intersection of the incoming and outgoing edge.
+    if (!intersectLines(edges[3], edges[0], refined[0])) return false;
+    if (!intersectLines(edges[0], edges[1], refined[1])) return false;
+    if (!intersectLines(edges[1], edges[2], refined[2])) return false;
+    if (!intersectLines(edges[2], edges[3], refined[3])) return false;
+
+    if (!pointsDistinct(refined)) return false;
+
+    const float coarse_side = 0.25f * (
+        dist(coarse[0], coarse[1]) + dist(coarse[1], coarse[2]) +
+        dist(coarse[2], coarse[3]) + dist(coarse[3], coarse[0]));
+    const float max_shift = clampf(
+        appcfg::kCornerRefineMaxShiftFraction * coarse_side, 3.0f, 8.0f);
+
+    for (int i = 0; i < 4; ++i) {
+        if (dist(coarse[i], refined[i]) > max_shift) return false;
+        // Allow a tiny margin outside the image because fitted lines can
+        // intersect just beyond the first/last pixel when a marker touches
+        // the frame boundary. The decoder itself clamps samples safely.
+        if (refined[i].x < -1.5f || refined[i].x > _width + 0.5f ||
+            refined[i].y < -1.5f || refined[i].y > _height + 0.5f) {
+            return false;
+        }
+    }
+
+    const float coarse_area = polygonArea4(coarse);
+    const float refined_area = polygonArea4(refined);
+    if (coarse_area < 1.0f || refined_area < 1.0f) return false;
+
+    const float area_ratio = refined_area / coarse_area;
+    if (area_ratio < 0.72f || area_ratio > 1.32f) return false;
+
+    return true;
+}
+
 bool MarkerDetector::decodeCandidate(const uint8_t* gray,
                                      const Point2f corners[4],
                                      int threshold, int expected_id,
@@ -240,6 +408,7 @@ bool MarkerDetector::decodeCandidate(const uint8_t* gray,
 bool MarkerDetector::detect(const uint8_t* gray, const RectI& input_roi,
                             int expected_id, MarkerObservation& out) {
     out.valid = false;
+    out.corner_refined = false;
     if (!gray || !_visited || !_queue) return false;
 
     const RectI roi = clampRect(input_roi);
@@ -361,14 +530,43 @@ bool MarkerDetector::detect(const uint8_t* gray, const RectI& input_roi,
 
     if (!best.valid) return false;
 
+    // Refine only the winning, already-decoded candidate so the extra work is
+    // tiny compared with the component scan. Never let refinement reduce
+    // detection robustness: if geometry or re-decode validation fails we
+    // simply retain the original extrema corners.
+    Point2f final_corners[4];
+    for (int i = 0; i < 4; ++i) final_corners[i] = best.corners[i];
+
+    Point2f refined[4];
+    if (refineCorners(gray, best.corners, refined)) {
+        int refined_rotation = -1;
+        int refined_hamming = 99;
+        float refined_border = 0.0f;
+        if (decodeCandidate(gray, refined, best.threshold, expected_id,
+                            &refined_rotation, &refined_hamming,
+                            &refined_border) &&
+            refined_rotation == best.rotation &&
+            refined_hamming <= best.hamming) {
+            for (int i = 0; i < 4; ++i) final_corners[i] = refined[i];
+            best.hamming = refined_hamming;
+            out.corner_refined = true;
+        }
+    }
+
+    const float final_side = 0.25f * (
+        dist(final_corners[0], final_corners[1]) +
+        dist(final_corners[1], final_corners[2]) +
+        dist(final_corners[2], final_corners[3]) +
+        dist(final_corners[3], final_corners[0]));
+
     out.valid = true;
     out.id = expected_id;
     out.rotation = best.rotation;
     out.hamming = best.hamming;
-    out.side_px = best.side_px;
+    out.side_px = final_side;
     out.quality = fmaxf(0.0f, fminf(1.0f,
         1.0f - 0.25f*best.hamming));
 
-    for (int i = 0; i < 4; ++i) out.corners[i] = best.corners[i];
+    for (int i = 0; i < 4; ++i) out.corners[i] = final_corners[i];
     return true;
 }

@@ -22,6 +22,7 @@ enum class TrackState : uint8_t {
 
 struct MarkerObservation {
     bool valid = false;
+    bool corner_refined = false;
     int id = -1;
     int rotation = 0;
     TrackState state = TrackState::Acquire;

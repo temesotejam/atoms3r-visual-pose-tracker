@@ -27,6 +27,11 @@ private:
         int threshold = 128;
     };
 
+    struct EdgeLine {
+        Point2f p;
+        Point2f d;
+    };
+
     int otsuThreshold(const uint8_t* gray, const RectI& roi) const;
     bool decodeCandidate(const uint8_t* gray, const Point2f corners[4],
                          int threshold, int expected_id,
@@ -35,6 +40,14 @@ private:
     bool solveUnitSquareHomography(const Point2f corners[4], float h[9]) const;
     uint8_t sampleGray(const uint8_t* gray, float x, float y) const;
     RectI clampRect(const RectI& r) const;
+
+    bool fitRefinedEdge(const uint8_t* gray,
+                        const Point2f& a, const Point2f& b,
+                        EdgeLine& line) const;
+    bool intersectLines(const EdgeLine& a, const EdgeLine& b,
+                        Point2f& out) const;
+    bool refineCorners(const uint8_t* gray,
+                       const Point2f coarse[4], Point2f refined[4]) const;
 
     int _width;
     int _height;
