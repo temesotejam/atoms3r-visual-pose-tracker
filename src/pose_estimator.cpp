@@ -3,6 +3,8 @@
 #include <math.h>
 #include <string.h>
 
+#include "app_config.h"
+
 namespace {
 constexpr float kRadToDeg = 57.29577951308232f;
 
@@ -39,6 +41,12 @@ float edgeLength(const Point2f& a, const Point2f& b) {
     const float dy = b.y - a.y;
     return sqrtf(dx*dx + dy*dy);
 }
+
+float relDiff(float a, float b) {
+    const float mean = 0.5f * (fabsf(a) + fabsf(b));
+    if (mean < 1e-6f) return 0.0f;
+    return fabsf(a - b) / mean;
+}
 }
 
 bool PoseEstimator::solveHomography(const Point2f src[4], const Point2f dst[4],
@@ -73,9 +81,8 @@ bool PoseEstimator::solveHomography(const Point2f src[4], const Point2f dst[4],
                 pivot = row;
             }
         }
-        if (pivot_abs < 1e-7f) {
-            return false;
-        }
+        if (pivot_abs < 1e-7f) return false;
+
         if (pivot != col) {
             for (int j = col; j < 9; ++j) {
                 const float tmp = a[col][j];
@@ -91,9 +98,7 @@ bool PoseEstimator::solveHomography(const Point2f src[4], const Point2f dst[4],
             if (row == col) continue;
             const float f = a[row][col];
             if (fabsf(f) < 1e-10f) continue;
-            for (int j = col; j < 9; ++j) {
-                a[row][j] -= f * a[col][j];
-            }
+            for (int j = col; j < 9; ++j) a[row][j] -= f * a[col][j];
         }
     }
 
@@ -104,11 +109,53 @@ bool PoseEstimator::solveHomography(const Point2f src[4], const Point2f dst[4],
 
 bool PoseEstimator::estimate(const Point2f canonical_corners[4],
                              MarkerObservation& out) const {
-    const float half = 0.5f * _marker_side;
+    // Always compute the robust image-domain measurements first. These remain
+    // the preferred visual observations for the current mechanism because the
+    // markers move mainly horizontally and stay close to fronto-parallel.
+    out.center_x_px = 0.25f * (
+        canonical_corners[0].x + canonical_corners[1].x +
+        canonical_corners[2].x + canonical_corners[3].x);
+    out.center_y_px = 0.25f * (
+        canonical_corners[0].y + canonical_corners[1].y +
+        canonical_corners[2].y + canonical_corners[3].y);
 
-    // Marker coordinates use X right, Y down, Z out of the marker plane.
-    // This matches image pixel direction and keeps the lightweight prototype
-    // easy to inspect. Convert axes later if the EKF uses another convention.
+    const float top = edgeLength(canonical_corners[0], canonical_corners[1]);
+    const float right = edgeLength(canonical_corners[1], canonical_corners[2]);
+    const float bottom = edgeLength(canonical_corners[2], canonical_corners[3]);
+    const float left = edgeLength(canonical_corners[3], canonical_corners[0]);
+    out.side_px = 0.25f * (top + right + bottom + left);
+
+    const float dx = canonical_corners[1].x - canonical_corners[0].x;
+    const float dy = canonical_corners[1].y - canonical_corners[0].y;
+    out.image_angle_deg = atan2f(dy, dx) * kRadToDeg;
+
+    // Mechanism-friendly constrained position estimate. For an approximately
+    // fronto-parallel square, apparent side length is a much more stable depth
+    // cue than decomposing a noisy planar homography into full 6DoF. Because
+    // the marker may be rotated ~90 deg in the image, use an effective focal
+    // length rather than assigning fx/fy to specific marker edges.
+    if (out.side_px > 1.0f) {
+        const float f_eff = sqrtf(_fx * _fy);
+        const float z = f_eff * _marker_side / out.side_px;
+        out.constrained_z_m = z;
+        out.constrained_x_m = (out.center_x_px - _cx) * z / _fx;
+        out.constrained_y_m = (out.center_y_px - _cy) * z / _fy;
+    }
+
+    // Opposite-edge asymmetry is a simple indicator of how much perspective
+    // excitation exists. Near zero means the marker is almost fronto-parallel,
+    // where out-of-plane roll/pitch are weakly observable and extremely
+    // sensitive to sub-pixel corner noise.
+    const float tb_asym = relDiff(top, bottom);
+    const float lr_asym = relDiff(left, right);
+    out.perspective_asymmetry = fmaxf(tb_asym, lr_asym);
+    out.tilt_reliable =
+        appcfg::kCameraIntrinsicsCalibrated &&
+        out.corner_refined &&
+        out.side_px >= appcfg::kTiltMinMarkerSidePx &&
+        out.perspective_asymmetry >= appcfg::kTiltMinPerspectiveAsymmetry;
+
+    const float half = 0.5f * _marker_side;
     Point2f object_xy[4] = {
         {-half, -half},
         { half, -half},
@@ -118,7 +165,9 @@ bool PoseEstimator::estimate(const Point2f canonical_corners[4],
 
     float h[9];
     if (!solveHomography(object_xy, canonical_corners, h)) {
-        return false;
+        // Keep the detection usable: constrained/image-domain measurements are
+        // still valid even if the diagnostic raw 6DoF decomposition fails.
+        return true;
     }
 
     // K^-1 H columns.
@@ -140,32 +189,27 @@ bool PoseEstimator::estimate(const Point2f canonical_corners[4],
 
     const float n1 = norm3(b1);
     const float n2 = norm3(b2);
-    if (n1 < 1e-6f || n2 < 1e-6f) {
-        return false;
-    }
+    if (n1 < 1e-6f || n2 < 1e-6f) return true;
 
     const float lambda = 2.0f / (n1 + n2);
     Vec3 r1 = scale3(b1, lambda);
     Vec3 r2 = scale3(b2, lambda);
     Vec3 t  = scale3(b3, lambda);
 
-    // Re-orthogonalize. Corner noise otherwise turns the homography columns
-    // into a slightly non-rigid matrix.
     const float r1n = norm3(r1);
-    if (r1n < 1e-6f) return false;
+    if (r1n < 1e-6f) return true;
     r1 = scale3(r1, 1.0f / r1n);
 
     r2 = sub3(r2, scale3(r1, dot3(r1, r2)));
     const float r2n = norm3(r2);
-    if (r2n < 1e-6f) return false;
+    if (r2n < 1e-6f) return true;
     r2 = scale3(r2, 1.0f / r2n);
 
     Vec3 r3 = cross3(r1, r2);
     const float r3n = norm3(r3);
-    if (r3n < 1e-6f) return false;
+    if (r3n < 1e-6f) return true;
     r3 = scale3(r3, 1.0f / r3n);
 
-    // Keep the marker in front of the camera.
     if (t.z < 0.0f) {
         t = scale3(t, -1.0f);
         r1 = scale3(r1, -1.0f);
@@ -177,8 +221,6 @@ bool PoseEstimator::estimate(const Point2f canonical_corners[4],
     out.y_m = t.y;
     out.z_m = t.z;
 
-    // R = [r1 r2 r3], ZYX Euler decomposition. Camera coordinate convention:
-    // +X right, +Y down, +Z forward.
     const float r20 = r1.z;
     const float pitch = asinf(fmaxf(-1.0f, fminf(1.0f, -r20)));
     const float cp = cosf(pitch);
@@ -196,23 +238,6 @@ bool PoseEstimator::estimate(const Point2f canonical_corners[4],
     out.roll_deg = roll * kRadToDeg;
     out.pitch_deg = pitch * kRadToDeg;
     out.yaw_deg = yaw * kRadToDeg;
-
-    out.center_x_px = 0.25f * (
-        canonical_corners[0].x + canonical_corners[1].x +
-        canonical_corners[2].x + canonical_corners[3].x);
-    out.center_y_px = 0.25f * (
-        canonical_corners[0].y + canonical_corners[1].y +
-        canonical_corners[2].y + canonical_corners[3].y);
-
-    const float top = edgeLength(canonical_corners[0], canonical_corners[1]);
-    const float right = edgeLength(canonical_corners[1], canonical_corners[2]);
-    const float bottom = edgeLength(canonical_corners[2], canonical_corners[3]);
-    const float left = edgeLength(canonical_corners[3], canonical_corners[0]);
-    out.side_px = 0.25f * (top + right + bottom + left);
-
-    const float dx = canonical_corners[1].x - canonical_corners[0].x;
-    const float dy = canonical_corners[1].y - canonical_corners[0].y;
-    out.image_angle_deg = atan2f(dy, dx) * kRadToDeg;
 
     return true;
 }

@@ -100,6 +100,9 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         "\"refined\":%s,"
         "\"cx_px\":%.2f,\"cy_px\":%.2f,\"side_px\":%.2f,"
         "\"image_angle_deg\":%.2f,"
+        "\"constrained_x_m\":%.5f,\"constrained_y_m\":%.5f,"
+        "\"constrained_z_m\":%.5f,"
+        "\"perspective_asymmetry\":%.4f,\"tilt_reliable\":%s,"
         "\"x_m\":%.5f,\"y_m\":%.5f,\"z_m\":%.5f,"
         "\"roll_deg\":%.2f,\"pitch_deg\":%.2f,\"yaw_deg\":%.2f,"
         "\"vision_us\":%u}",
@@ -110,6 +113,9 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         m.corner_refined ? "true" : "false",
         m.center_x_px, m.center_y_px, m.side_px,
         m.image_angle_deg,
+        m.constrained_x_m, m.constrained_y_m, m.constrained_z_m,
+        m.perspective_asymmetry,
+        m.tilt_reliable ? "true" : "false",
         m.x_m, m.y_m, m.z_m,
         m.roll_deg, m.pitch_deg, m.yaw_deg,
         m.vision_processing_us);
@@ -126,6 +132,7 @@ void printTelemetry(const MarkerObservation& a,
     Serial.printf(
         "{\"t_us\":%llu,\"frame\":%u,\"camera_failures\":%u,"
         "\"vision_total_us\":%u,\"vision_max_us\":%u,"
+        "\"motion_axis\":\"horizontal\","
         "\"imu\":{\"enabled\":%s,\"loops\":%u,\"misses\":%u,"
         "\"max_step_us\":%u,\"ax\":%.5f,\"ay\":%.5f,\"az\":%.5f,"
         "\"gx\":%.5f,\"gy\":%.5f,\"gz\":%.5f},",
@@ -152,6 +159,7 @@ void setup() {
     Serial.println();
     Serial.println("AtomS3R Visual Pose Tracker boot");
     Serial.println("Init order: camera I2C0 first, BMI270 I2C1 second");
+    Serial.println("Motion model: horizontal; A upper band, B lower band");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
@@ -163,20 +171,12 @@ void setup() {
         while (true) delay(1000);
     }
 
-    // Important: do not call M5.begin() here. On AtomS3R-CAM its display/
-    // board-detection path can touch hardware I2C0 before esp32-camera owns
-    // the GC0308 SCCB bus. The camera SCCB pins are GPIO12 SDA / GPIO9 SCL
-    // and esp32-camera uses hardware I2C0 by default, so claim it first.
     if (!g_camera.begin()) {
         Serial.printf("FATAL: camera init: %s\n", g_camera.lastError());
         while (true) delay(1000);
     }
     Serial.println("CAMERA READY: GC0308 SCCB owns I2C0");
 
-    // Bring up only the onboard BMI270 from M5Unified, without running the
-    // full M5.begin() auto-detection stack. AtomS3R-CAM internal I2C wiring:
-    //   I2C1, SDA=GPIO45, SCL=GPIO0.
-    // Passing the explicit board type preserves M5Unified's AtomS3R axis map.
     M5.In_I2C.setPort(I2C_NUM_1, GPIO_NUM_45, GPIO_NUM_0);
     const bool imu_ok =
         M5.Imu.begin(&M5.In_I2C, m5::board_t::board_M5AtomS3RCam);
@@ -235,6 +235,5 @@ void loop() {
         printTelemetry(a, b, vision_us);
     }
 
-    // Vision owns no deadline. The high-rate IMU/control task stays on core 0.
     delay(1);
 }

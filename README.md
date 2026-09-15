@@ -4,22 +4,26 @@ A deliberately small vision pipeline for **M5Stack AtomS3R-CAM**.
 
 The first milestone tracks two known **OpenCV ArUco `DICT_4X4_50` markers
 (ID 0 and ID 1)** while preserving a separate **200 Hz IMU/control task**.
-It is designed for mechanisms where each marker moves mainly in a known
-vertical lane, so the firmware does not pay the cost of a general full-frame
-marker search on every image.
+The real mounting has now confirmed that both markers move mainly
+**horizontally**: marker A stays in an upper image band and marker B in a lower
+image band. The firmware therefore uses two horizontal acquisition bands and
+switches to a predicted local ROI after lock.
 
 ## What is implemented
 
 - GC0308 at **QVGA 320×240**
 - native **grayscale/Y8** capture
 - two independent marker trackers
-- initial lane acquisition
+- upper/lower horizontal acquisition bands
 - predicted local ROI after acquisition
 - expanding recovery ROI after misses
-- fallback to lane acquisition instead of immediate full-frame search
+- fallback to band acquisition instead of immediate full-frame search
 - minimal two-ID ArUco dictionary (`DICT_4X4_50`, IDs 0 and 1)
 - 4-corner extraction and homography-based cell sampling
-- lightweight planar pose estimate
+- lightweight edge-line corner refinement
+- constrained fronto-parallel position estimate for the mainly-horizontal mechanism
+- raw homography 6DoF kept as diagnostic output
+- tilt-observability telemetry (`perspective_asymmetry`, `tilt_reliable`)
 - BMI270 high-rate task at **200 Hz**
 - control integration hook that is intentionally independent of vision
 - JSON telemetry at **921600 baud**
@@ -29,22 +33,28 @@ marker search on every image.
 
 ## Important: current pose accuracy
 
-`center_y_px` and `image_angle_deg` are the most useful bring-up signals.
+For the current mechanism, `center_x_px` is the primary image-domain motion
+measurement. `center_y_px` should remain nearly constant and is useful as a
+consistency check. `image_angle_deg` is also stable enough for bring-up.
 
-The current `x_m/y_m/z_m` and 3D Euler angles use approximate camera
+The new `constrained_x_m / constrained_y_m / constrained_z_m` fields use marker
+center, mean apparent side length, the configured physical marker size, and the
+current approximate focal length. For this mostly fronto-parallel mechanism,
+that constrained estimate is intentionally preferred over raw planar
+homography roll/pitch.
+
+The current `x_m/y_m/z_m` and raw 3D Euler angles still use approximate camera
 intrinsics in `include/app_config.h`. They are **not calibration-grade yet**.
-Before feeding metric camera pose into an EKF, calibrate the actual GC0308
-module and replace `fx/fy/cx/cy`.
-
-The corner detector is also intentionally lightweight. The first real-hardware
-test should determine whether motion blur and the black-border connected
-component are clean enough before adding more complexity.
+The latest hardware logs show that roll/pitch can jump strongly even while
+marker center and size are almost stationary. Therefore `tilt_reliable` remains
+false until the real GC0308 intrinsics are calibrated and the frame also has
+enough perspective asymmetry.
 
 ## Default marker setup
 
 - Dictionary: OpenCV `DICT_4X4_50`
-- Marker A: ID `0`
-- Marker B: ID `1`
+- Marker A: ID `0`, upper horizontal band
+- Marker B: ID `1`, lower horizontal band
 - Printed black-square side: `50 mm`
 
 The Pages site includes a printable marker sheet.
@@ -59,10 +69,14 @@ The values most likely to change first are:
 kMarkerSideM
 
 kLaneAX
+kLaneAY
 kLaneAW
+kLaneAH
 
 kLaneBX
+kLaneBY
 kLaneBW
+kLaneBH
 
 kFxPx
 kFyPx
@@ -70,17 +84,24 @@ kCxPx
 kCyPx
 ```
 
-The initial lane defaults overlap slightly:
+The current acquisition geometry is approximately:
 
 ```text
-0                                      319
-|------------- A -------------|
-                  |------------- B -------------|
+320 px wide
++--------------------------------------+
+|           Marker A band              |
+|     <------ horizontal travel ---->   |
++--------------------------------------+
+|                                      |
++--------------------------------------+
+|           Marker B band              |
+|     <------ horizontal travel ---->   |
++--------------------------------------+
 ```
 
 After a marker is found, only a predicted ROI around its previous
 position/velocity is searched. After several misses the tracker returns to its
-configured lane.
+configured horizontal band.
 
 ## Serial output
 
@@ -91,34 +112,16 @@ Every ~100 ms the firmware emits one JSON object containing:
 - camera/frame counters
 - total vision processing time
 - max observed vision time
+- `motion_axis: "horizontal"`
 - 200 Hz IMU loop count
 - IMU deadline misses
 - max IMU step execution time
 - acceleration / gyro
 - marker validity/state
-- pixel position
-- pixel angle
-- approximate camera-relative XYZ and Euler angles
-
-Example fields:
-
-```json
-{
-  "vision_total_us": 8300,
-  "imu": {
-    "loops": 2450,
-    "misses": 0,
-    "max_step_us": 740
-  },
-  "marker_a": {
-    "valid": true,
-    "state": "track",
-    "cy_px": 122.4,
-    "image_angle_deg": 1.7,
-    "z_m": 0.42
-  }
-}
-```
+- pixel position and image-plane angle
+- constrained XYZ estimate
+- perspective asymmetry / tilt reliability
+- raw approximate camera-relative XYZ and Euler angles
 
 ## Build locally
 
@@ -148,26 +151,28 @@ Core 0 / high priority
 
 Core 1 / non-deadline vision
     GC0308 frame
-      -> Marker A predicted ROI
-      -> Marker B predicted ROI
-      -> homography / ID check / pose
+      -> Marker A upper-band acquire / predicted ROI
+      -> Marker B lower-band acquire / predicted ROI
+      -> ID + refined corners
+      -> constrained horizontal position measurement
+      -> raw pose diagnostics
       -> future timestamped EKF correction
 ```
 
 Vision is not allowed to block the 200 Hz loop. A slow or missed frame should
 reduce visual update rate, not stall control.
 
-## First hardware test
+## Hardware test
 
 1. Print ID 0 and ID 1 at the configured physical size.
 2. Flash from the Pages installer.
 3. Open serial at 921600 baud.
 4. Keep both markers still and confirm `valid=true`.
-5. Move each marker only vertically and confirm the tracker stays in `track`.
-6. Cover one marker and confirm `track -> recover -> acquire`.
-7. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.
-8. Only after this passes, tune exposure / marker size and perform camera
-   calibration.
+5. Move each marker horizontally through its normal travel and confirm the tracker stays in `track`.
+6. Confirm `cx_px` follows the motion while `cy_px` remains comparatively constant.
+7. Cover one marker and confirm `track -> recover -> acquire`.
+8. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.
+9. Calibrate the real camera before enabling metric visual corrections in the EKF.
 
 ## Sources used for the initial hardware assumptions
 

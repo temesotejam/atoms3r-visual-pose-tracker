@@ -36,14 +36,32 @@ struct MarkerObservation {
     float side_px = 0.0f;
     float image_angle_deg = 0.0f;
 
-    // Camera-relative pose. These values are approximate until the real
-    // camera intrinsics are calibrated.
+    // Raw homography-decomposition pose. Keep this for diagnostics, but do
+    // not feed roll/pitch directly into an EKF unless camera intrinsics are
+    // calibrated and tilt_reliable is true. A nearly fronto-parallel planar
+    // marker is intrinsically weak for out-of-plane tilt estimation.
     float x_m = 0.0f;
     float y_m = 0.0f;
     float z_m = 0.0f;
     float roll_deg = 0.0f;
     float pitch_deg = 0.0f;
     float yaw_deg = 0.0f;
+
+    // Mechanism-friendly constrained position estimate. This assumes the
+    // marker is approximately fronto-parallel and uses marker center + mean
+    // apparent side length. It is intended as the stable visual measurement
+    // to evaluate for the mainly-horizontal-motion use case. It is still only
+    // approximate until the real camera intrinsics are calibrated.
+    float constrained_x_m = 0.0f;
+    float constrained_y_m = 0.0f;
+    float constrained_z_m = 0.0f;
+
+    // Perspective excitation / observability diagnostics for the raw 3-D
+    // tilt estimate. perspective_asymmetry compares opposite projected edge
+    // lengths. A small value means roll/pitch are weakly observable from the
+    // square in this frame. tilt_reliable is intentionally conservative.
+    float perspective_asymmetry = 0.0f;
+    bool tilt_reliable = false;
 
     float quality = 0.0f;
     int hamming = 99;

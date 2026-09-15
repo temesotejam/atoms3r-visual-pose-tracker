@@ -32,16 +32,16 @@ RectI MarkerTracker::clampToFrame(const RectI& in) const {
 
 RectI MarkerTracker::computeSearchRoi(uint64_t frame_timestamp_us) const {
     if (!_have_track || _misses >= appcfg::kMaxMissesBeforeLaneAcquire) {
-        // `_lane` constrains the expected path of the marker CENTER during
-        // acquisition. It is deliberately not a hard crop for the marker
-        // square itself: a marker straddling a lane boundary must still be
-        // fully visible to the decoder.
+        // `_lane` is really an acquisition CENTER-path region. Expand it in
+        // both axes so a marker near any region boundary is still fully
+        // visible. This supports the current mounting where A/B move mainly
+        // horizontally in separate upper/lower image bands.
         const int guard = appcfg::kAcquireLaneGuardPx;
         return clampToFrame(RectI{
             _lane.x - guard,
-            _lane.y,
+            _lane.y - guard,
             _lane.w + 2 * guard,
-            _lane.h
+            _lane.h + 2 * guard
         });
     }
 
@@ -64,8 +64,8 @@ RectI MarkerTracker::computeSearchRoi(uint64_t frame_timestamp_us) const {
     int half_h = static_cast<int>(
         0.70f * side + appcfg::kTrackMarginYPx * recover_scale);
 
-    if (half_w < 28) half_w = 28;
-    if (half_h < 42) half_h = 42;
+    if (half_w < 42) half_w = 42;
+    if (half_h < 28) half_h = 28;
 
     RectI r{
         static_cast<int>(px) - half_w,
@@ -75,10 +75,8 @@ RectI MarkerTracker::computeSearchRoi(uint64_t frame_timestamp_us) const {
     };
 
     // Important: after lock, do NOT intersect the ROI with the acquisition
-    // lane. The lane only predicts the center path. Cropping a tracking ROI
-    // at the lane edge cuts the marker border/payload and caused immediate
-    // track loss whenever a valid marker was acquired near or outside the
-    // nominal lane boundary. Only the physical image boundary may clip it.
+    // region. The region only predicts the center path. Only the physical
+    // image boundary may clip the local tracking ROI.
     return clampToFrame(r);
 }
 
@@ -98,7 +96,7 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
         // previous image velocity forever. The recovery ROI already expands
         // with every miss, so gently damping the predictor improves recovery
         // after a transient corner/decode failure without forcing an early
-        // full-lane acquisition.
+        // full-region acquisition.
         _vx_px_s *= 0.75f;
         _vy_px_s *= 0.75f;
 
@@ -143,7 +141,10 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
             const float raw_vy =
                 (obs.center_y_px - _last.center_y_px) / dt;
             _vx_px_s = 0.55f * _vx_px_s + 0.45f * raw_vx;
-            _vy_px_s = 0.55f * _vy_px_s + 0.45f * raw_vy;
+            // Vertical movement should be small in the mounted mechanism, so
+            // damp Y more strongly to keep the prediction centered in the
+            // correct horizontal band during short image glitches.
+            _vy_px_s = 0.75f * _vy_px_s + 0.25f * raw_vy;
         }
     }
 
