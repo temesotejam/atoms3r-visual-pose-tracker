@@ -24,6 +24,14 @@ static constexpr float kFyPx = 290.0f;
 static constexpr float kCxPx = 159.5f;
 static constexpr float kCyPx = 119.5f;
 
+// Fast-motion camera tuning. The GC0308 default automatic exposure can become
+// long enough indoors to smear the 4x4 payload while the mechanism is moving.
+// Keep exposure fixed at a moderately shorter value and leave AGC enabled so
+// brightness can still be recovered with gain. This is deliberately a first
+// hardware-test value rather than an aggressive minimum-exposure setting.
+static constexpr bool kCameraFastExposure = true;
+static constexpr int kCameraExposureValue = 300;
+
 // Keep false until the actual AtomS3R-CAM module has been calibrated. Raw
 // planar homography roll/pitch is not considered EKF-grade while this is false.
 static constexpr bool kCameraIntrinsicsCalibrated = false;
@@ -57,13 +65,21 @@ static constexpr int kAcquireLaneGuardPx = 40;
 // margin; vertical motion is expected to be small for the mounted mechanism.
 static constexpr int kTrackMarginXPx = 52;
 static constexpr int kTrackMarginYPx = 20;
-static constexpr int kMaxMissesBeforeLaneAcquire = 3;
+
+// Keep the last-y / predicted ROI recovery model alive for several misses.
+// By miss #2 the X ROI is already almost frame-wide, while preserving a more
+// local Y threshold than immediately reverting to the whole acquisition band.
+static constexpr int kMaxMissesBeforeLaneAcquire = 6;
 
 // Candidate geometry.
 static constexpr int kMinMarkerSidePx = 18;
 static constexpr int kMaxMarkerSidePx = 180;
 static constexpr int kMinBlackComponentAreaPx = 90;
-static constexpr int kMaxHammingError = 1;
+
+// The tracker searches for one already-known ID in a constrained band/ROI.
+// Allowing two bit errors is still conservative (16-bit payload) and is much
+// more tolerant of mild motion blur than the previous one-bit limit.
+static constexpr int kMaxHammingError = 2;
 
 // Lightweight sub-pixel-ish corner refinement. The coarse connected-component
 // extrema are only used to acquire/decode a marker. Once an ID is accepted,

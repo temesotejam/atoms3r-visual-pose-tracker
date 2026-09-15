@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include "esp_timer.h"
 
+#include "app_config.h"
+
 namespace {
 constexpr int PIN_CAM_POWER_N = 18;
 constexpr int PIN_CAM_SDA = 12;
@@ -74,6 +76,28 @@ bool CameraDriver::begin() {
     s->set_framesize(s, FRAMESIZE_QVGA);
     s->set_vflip(s, 1);
     s->set_hmirror(s, 0);
+
+    // Hardware logs show that marker loss correlates strongly with motion.
+    // The GC0308 default AEC may select a relatively long indoor exposure,
+    // which smears the 4x4 payload. For the motion-robust test, hold exposure
+    // to a moderately shorter value while keeping automatic gain enabled.
+    // Failure of an optional sensor setter is non-fatal; the startup log tells
+    // us exactly which controls the installed esp32-camera version supports.
+    if (appcfg::kCameraFastExposure) {
+        int rc_aec = -99;
+        int rc_value = -99;
+        int rc_agc = -99;
+
+        if (s->set_exposure_ctrl) rc_aec = s->set_exposure_ctrl(s, 0);
+        if (s->set_aec_value) {
+            rc_value = s->set_aec_value(s, appcfg::kCameraExposureValue);
+        }
+        if (s->set_gain_ctrl) rc_agc = s->set_gain_ctrl(s, 1);
+
+        Serial.printf(
+            "CAMERA MOTION TUNE: exposure=%d, aec_off_rc=%d, exposure_rc=%d, agc_auto_rc=%d\n",
+            appcfg::kCameraExposureValue, rc_aec, rc_value, rc_agc);
+    }
 
     _last_error = "ok";
     return true;
