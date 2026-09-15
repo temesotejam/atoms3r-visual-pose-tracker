@@ -13,8 +13,8 @@ static constexpr int kMarkerAId = 0;
 static constexpr int kMarkerBId = 1;
 
 // Physical black-square side length of the printed marker.
-// Change this to the actual printed size before trusting metric XYZ.
-static constexpr float kMarkerSideM = 0.050f;
+// Verified against the CAD definition and the 10 mm grid in the hardware image.
+static constexpr float kMarkerSideM = 0.006f;
 
 // Approximate QVGA intrinsics. These are only good enough to bring up the
 // pipeline. Calibrate the actual camera and replace these values before
