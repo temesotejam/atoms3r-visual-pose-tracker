@@ -24,6 +24,17 @@ static constexpr float kFyPx = 290.0f;
 static constexpr float kCxPx = 159.5f;
 static constexpr float kCyPx = 119.5f;
 
+// Keep false until the actual AtomS3R-CAM module has been calibrated. Raw
+// planar homography roll/pitch is not considered EKF-grade while this is false.
+static constexpr bool kCameraIntrinsicsCalibrated = false;
+
+// Even after calibration, a nearly fronto-parallel square gives little
+// perspective information about out-of-plane tilt. This relative opposite-edge
+// asymmetry is a conservative first gate; hardware logs should be used to tune
+// it before enabling visual roll/pitch corrections.
+static constexpr float kTiltMinPerspectiveAsymmetry = 0.035f;
+static constexpr int kTiltMinMarkerSidePx = 32;
+
 // Initial acquisition lanes. The marker motion is assumed to be mainly
 // vertical. Adjust these four values after mounting the camera.
 // Lane A defaults to left half, lane B to right half.
@@ -59,7 +70,7 @@ static constexpr int kMaxHammingError = 1;
 // each outer black/white edge is re-measured at several locations, a line is
 // fitted to the edge samples, and adjacent lines are intersected. This is much
 // cheaper than a general-purpose OpenCV cornerSubPix pass and targets the
-// roll/pitch quantization seen in hardware logs with ~30-40 px markers.
+// roll/pitch quantization seen in hardware logs with ~30-50 px markers.
 static constexpr int kCornerRefineSamplesPerEdge = 10;
 static constexpr int kCornerRefineSearchRadiusPx = 5;
 static constexpr float kCornerRefineMinContrast = 10.0f;
