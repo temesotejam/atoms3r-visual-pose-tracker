@@ -50,7 +50,7 @@ struct MarkerObservation {
     // Mechanism-friendly constrained position estimate. This assumes the
     // marker is approximately fronto-parallel and uses marker center + mean
     // apparent side length. It is intended as the stable visual measurement
-    // to evaluate for the mainly-vertical-motion use case. It is still only
+    // to evaluate for the mainly-horizontal-motion use case. It is still only
     // approximate until the real camera intrinsics are calibrated.
     float constrained_x_m = 0.0f;
     float constrained_y_m = 0.0f;
