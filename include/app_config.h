@@ -35,28 +35,28 @@ static constexpr bool kCameraIntrinsicsCalibrated = false;
 static constexpr float kTiltMinPerspectiveAsymmetry = 0.035f;
 static constexpr int kTiltMinMarkerSidePx = 32;
 
-// Initial acquisition lanes. The marker motion is assumed to be mainly
-// vertical. Adjust these four values after mounting the camera.
-// Lane A defaults to left half, lane B to right half.
+// Initial acquisition regions. Hardware mounting shows that both markers move
+// mainly HORIZONTALLY: marker A stays in the upper band and marker B in the
+// lower band. These rectangles constrain the expected marker CENTER only.
 static constexpr int kLaneAX = 0;
 static constexpr int kLaneAY = 0;
-static constexpr int kLaneAW = 170;
-static constexpr int kLaneAH = 240;
+static constexpr int kLaneAW = 320;
+static constexpr int kLaneAH = 105;
 
-static constexpr int kLaneBX = 150;
-static constexpr int kLaneBY = 0;
-static constexpr int kLaneBW = 170;
-static constexpr int kLaneBH = 240;
+static constexpr int kLaneBX = 0;
+static constexpr int kLaneBY = 115;
+static constexpr int kLaneBW = 320;
+static constexpr int kLaneBH = 125;
 
-// A lane describes where the marker CENTER is expected to move. During
-// acquisition the image-search ROI is expanded beyond the lane so that a
-// marker near a lane boundary is not cut in half before its ID is decoded.
-// 96 px is slightly more than half of kMaxMarkerSidePx (180 px).
-static constexpr int kAcquireLaneGuardPx = 96;
+// Expand the center-path region in both X and Y during acquisition so the
+// complete ~50 px marker remains visible when its center approaches a band
+// boundary. 40 px is deliberately larger than half the observed marker side.
+static constexpr int kAcquireLaneGuardPx = 40;
 
-// Tracking ROI around the predicted center.
-static constexpr int kTrackMarginXPx = 24;
-static constexpr int kTrackMarginYPx = 52;
+// Tracking ROI around the predicted center. Horizontal travel gets the larger
+// margin; vertical motion is expected to be small for the mounted mechanism.
+static constexpr int kTrackMarginXPx = 52;
+static constexpr int kTrackMarginYPx = 20;
 static constexpr int kMaxMissesBeforeLaneAcquire = 3;
 
 // Candidate geometry.
