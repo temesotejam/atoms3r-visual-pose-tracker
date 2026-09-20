@@ -20,6 +20,18 @@ enum class TrackState : uint8_t {
     Recover = 2,
 };
 
+enum class TrackFailReason : uint8_t {
+    None = 0,
+    Preconditions = 1,
+    Timing = 2,
+    Bounds = 3,
+    SearchBoundary = 4,
+    Sad = 5,
+    Refine = 6,
+    Pose = 7,
+    Geometry = 8,
+};
+
 struct MarkerObservation {
     bool valid = false;
     bool corner_refined = false;
@@ -76,6 +88,27 @@ struct MarkerObservation {
     uint32_t flow_fail_count = 0;
     uint32_t decode_success_count = 0;
     uint32_t reacquire_count = 0;
+
+    // Per-frame tracking-loss diagnostics. These make it possible to tell
+    // whether the constrained local search was too small, the image match was
+    // poor, or the marker was outside the local ArUco ROI.
+    TrackFailReason one_d_fail_reason = TrackFailReason::None;
+    int one_d_pred_x_px = 0;
+    int one_d_best_x_px = 0;
+    int one_d_best_offset_px = 0;
+    float one_d_best_mean_sad = 0.0f;
+
+    TrackFailReason pyramid_fail_reason = TrackFailReason::None;
+    int pyramid_pred_x_px = 0;
+    int pyramid_pred_y_px = 0;
+    int pyramid_best_x_px = 0;
+    int pyramid_best_y_px = 0;
+
+    RectI aruco_local_roi{};
+    bool fullframe_aruco_attempted = false;
+    bool fullframe_aruco_hit = false;
+    bool fullframe_reacquired = false;
+    uint32_t fullframe_aruco_us = 0;
 
     float quality = 0.0f;
     int hamming = 99;
