@@ -155,6 +155,10 @@ bool PoseEstimator::estimate(const Point2f canonical_corners[4],
         out.side_px >= appcfg::kTiltMinMarkerSidePx &&
         out.perspective_asymmetry >= appcfg::kTiltMinPerspectiveAsymmetry;
 
+    // Normal control does not use the raw homography 6DoF. Avoid the 8x8
+    // solve + decomposition unless a dedicated diagnostic build enables it.
+    if (!appcfg::kEnableRawHomographyPose) return true;
+
     const float half = 0.5f * _marker_side;
     Point2f object_xy[4] = {
         {-half, -half},

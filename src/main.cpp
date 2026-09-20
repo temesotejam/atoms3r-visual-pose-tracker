@@ -50,6 +50,7 @@ const char* stateName(TrackState state) {
 }
 
 const char* sourceName(const MarkerObservation& m) {
+    if (m.one_d_tracked) return "1d";
     if (m.flow_tracked) return "pyramid";
     if (m.decoded_this_frame) return "aruco";
     return "none";
@@ -110,6 +111,7 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         "\"%s\":{\"valid\":%s,\"state\":\"%s\",\"source\":\"%s\","
         "\"id\":%d,\"rotation\":%d,\"hamming\":%d,\"quality\":%.3f,"
         "\"refined\":%s,\"track_sad\":%.2f,"
+        "\"track1d_ok\":%u,\"track1d_fail\":%u,"
         "\"flow_ok\":%u,\"flow_fail\":%u,\"decode_ok\":%u,\"reacquire\":%u,"
         "\"cx_px\":%.2f,\"cy_px\":%.2f,\"side_px\":%.2f,"
         "\"image_angle_deg\":%.2f,"
@@ -126,6 +128,7 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         m.id, m.rotation, m.hamming, m.quality,
         m.corner_refined ? "true" : "false",
         m.track_mean_sad,
+        m.one_d_success_count, m.one_d_fail_count,
         m.flow_success_count, m.flow_fail_count,
         m.decode_success_count, m.reacquire_count,
         m.center_x_px, m.center_y_px, m.side_px,
@@ -178,7 +181,8 @@ void setup() {
     Serial.println("AtomS3R Visual Pose Tracker boot");
     Serial.println("Init order: camera I2C0 first, BMI270 I2C1 second");
     Serial.println("Motion model: horizontal; A upper band, B lower band");
-    Serial.println("Tracking: ArUco acquire/reacquire + two-level local flow");
+    Serial.println(
+        "Tracking: constrained 1D X first, pyramid fallback, ArUco reacquire");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");

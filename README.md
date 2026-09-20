@@ -16,16 +16,18 @@ switches to a predicted local ROI after lock.
 - two independent marker trackers
 - upper/lower horizontal acquisition bands
 - predicted local ROI after acquisition
-- two-level local block tracking after a valid lock
-- edge-line corner re-fit after local tracking
-- immediate ArUco fallback when local tracking is not trustworthy
+- ultra-light horizontal-only 1D tracking as the normal fast path
+- only three Y sample rows, X-only search, and no per-frame corner re-fit
+- two-level local block tracking retained as a safety fallback
+- ArUco fallback when both local trackers are not trustworthy
+- lane-wide acquisition duty-cycled while fully lost to leave CPU headroom
 - expanding recovery ROI after misses
 - fallback to band acquisition instead of immediate full-frame search
 - minimal two-ID ArUco dictionary (`DICT_4X4_50`, IDs 0 and 1)
 - 4-corner extraction and homography-based cell sampling
 - lightweight edge-line corner refinement
 - constrained fronto-parallel position estimate for the mainly-horizontal mechanism
-- raw homography 6DoF kept as diagnostic output
+- raw homography 6DoF kept as an optional diagnostic build path (off by default)
 - tilt-observability telemetry (`perspective_asymmetry`, `tilt_reliable`)
 - BMI270 high-rate task at **200 Hz**
 - control integration hook that is intentionally independent of vision
@@ -104,12 +106,17 @@ The current acquisition geometry is approximately:
 +--------------------------------------+
 ```
 
-After a marker is found, the immediately previous grayscale frame is used for a
-two-level local block match around the velocity-predicted center. The known
-square is shifted by that motion and its four outer edges are re-fitted. If the
-local track fails its quality or geometry checks, the same frame falls back to
-ArUco decoding in the predicted ROI. After several misses the tracker returns
-to its configured horizontal band.
+After a marker is found, the normal path uses the mechanism constraint directly:
+the marker is assumed to translate only in X over a short range while Y, scale,
+and image rotation stay effectively fixed. Three rows through the known marker
+are sampled and matched only along X around the velocity prediction. A successful
+1D match translates the already-validated marker geometry without re-fitting four
+corners or solving a homography.
+
+If that 1D match is not trustworthy, the previous two-level X/Y block tracker is
+used as a safety fallback, and only then is ArUco decoding attempted. Once fully
+lost, expensive lane-wide ArUco acquisition is duty-cycled rather than run on
+every camera frame.
 
 ## Serial output
 
@@ -125,8 +132,8 @@ Every ~100 ms the firmware emits one JSON object containing:
 - IMU deadline misses
 - max IMU step execution time
 - acceleration / gyro
-- marker validity/state and tracking source (`aruco` / `pyramid` / `none`)
-- local tracking SAD and cumulative flow/decode/reacquire counters
+- marker validity/state and tracking source (`1d` / `pyramid` / `aruco` / `none`)
+- local tracking SAD and cumulative 1D/flow/decode/reacquire counters
 - pixel position and image-plane angle
 - constrained XYZ estimate
 - perspective asymmetry / tilt reliability
@@ -161,11 +168,11 @@ Core 0 / high priority
 Core 1 / non-deadline vision
     GC0308 frame
       -> Marker A / Marker B
-      -> ArUco acquire/reacquire when needed
-      -> otherwise two-level local motion tracking
-      -> refined outer corners
+      -> constrained 1D X tracking in normal operation
+      -> two-level local motion tracking only as fallback
+      -> ArUco acquire/reacquire only when needed
       -> constrained horizontal position measurement
-      -> raw pose diagnostics
+      -> optional raw pose diagnostics
       -> future timestamped EKF correction
 ```
 
@@ -178,8 +185,8 @@ reduce visual update rate, not stall control.
 2. Flash from the Pages installer.
 3. Open serial at 921600 baud.
 4. Keep both markers still and confirm `valid=true`; the initial lock should report `source:"aruco"`.
-5. Move each marker horizontally and confirm successful following frames normally report `source:"pyramid"`.
-6. Watch `track_sad`, `flow_fail`, and `reacquire` while increasing motion speed.
+5. Move each marker horizontally and confirm successful following frames normally report `source:"1d"`.
+6. Watch `track_sad`, `track1d_fail`, `flow_fail`, and `reacquire` while increasing motion speed.
 7. Confirm `cx_px` follows the motion while `cy_px` remains comparatively constant.
 8. Cover one marker and confirm recovery returns through ArUco acquisition.
 9. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.

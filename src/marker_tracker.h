@@ -19,6 +19,10 @@ public:
 private:
     RectI computeSearchRoi(uint64_t frame_timestamp_us) const;
     RectI clampToFrame(const RectI& r) const;
+    bool trackWith1D(const uint8_t* previous_gray,
+                     const uint8_t* gray,
+                     uint64_t frame_timestamp_us,
+                     MarkerObservation& out);
     bool trackWithPyramid(const uint8_t* previous_gray,
                           const uint8_t* gray,
                           uint64_t frame_timestamp_us,
@@ -37,6 +41,9 @@ private:
     int _misses = 0;
     float _vx_px_s = 0.0f;
     float _vy_px_s = 0.0f;
+    int _acquire_decode_cooldown = 0;
+    uint32_t _one_d_successes = 0;
+    uint32_t _one_d_failures = 0;
     uint32_t _flow_successes = 0;
     uint32_t _flow_failures = 0;
     uint32_t _decode_successes = 0;
