@@ -15,8 +15,8 @@
       <p class="eyebrow">AtomS3R-CAM / GC0308</p>
       <h1>Visual Pose Tracker</h1>
       <p class="lead">
-        2個の ArUco DICT_4X4_50 マーカーを、縦方向の既知レーンから捕捉して
-        小さなROIで追跡する実験ファームウェアです。
+        2個の ArUco DICT_4X4_50 マーカーを上下の水平帯域から捕捉し、
+        捕捉後は2段の局所追跡で高速に追従する実験ファームウェアです。
       </p>
     </section>
 
@@ -28,8 +28,9 @@
           AtomS3R-CAMをUSBで接続し、下のボタンから書き込みます。
           Chrome / Edge のWeb Serialを使用します。
         </p>
+        <div id="buildInfo" class="build-info">公開ファーム情報を確認中…</div>
       </div>
-      <esp-web-install-button manifest="manifest.json">
+      <esp-web-install-button id="installer">
         <button slot="activate" class="primary">接続して書き込む</button>
         <p slot="unsupported" class="warn">
           このブラウザはWeb Serialに対応していません。ChromeまたはEdgeを使用してください。
@@ -40,18 +41,50 @@
       </esp-web-install-button>
       <div class="hint">
         書き込みモード: Resetを約2秒長押し → 内部の緑LED点灯 → 離す。
+        書き込み後は通常起動してから下のシリアルへ接続してください。
       </div>
+    </section>
+
+    <section class="card serial-card">
+      <div class="serial-head">
+        <div>
+          <p class="step">02 · Serial</p>
+          <h2>シリアルを確認する</h2>
+          <p>
+            921600 baudでJSONログを表示します。実験後は「ログをコピー」で
+            表示中の内容をそのままクリップボードへコピーできます。
+          </p>
+        </div>
+        <span id="serialStatus" class="status-pill">未接続</span>
+      </div>
+      <div class="button-row">
+        <button id="serialConnect" class="primary">シリアル接続</button>
+        <button id="serialDisconnect" class="ghost" disabled>切断</button>
+        <button id="serialCopy" class="ghost">ログをコピー</button>
+        <button id="serialClear" class="ghost">クリア</button>
+      </div>
+      <pre id="serialLog" class="serial-log">未接続</pre>
+      <p class="small">
+        主な確認項目:
+        <code>source</code>（aruco / pyramid）、
+        <code>track_sad</code>、
+        <code>flow_ok</code> / <code>flow_fail</code>、
+        <code>reacquire</code>、
+        <code>frame_dt_us</code>、
+        <code>imu.misses</code>。
+      </p>
     </section>
 
     <section class="grid">
       <a class="card link-card" href="markers.html">
-        <p class="step">02 · Markers</p>
+        <p class="step">03 · Markers</p>
         <h2>テスト用マーカー</h2>
-        <p>ID 0 / ID 1を実寸で印刷できます。</p>
+        <p>ID 0 / ID 1を現在の6 mm設定で印刷できます。</p>
         <span>開く →</span>
       </a>
-      <a class="card link-card" href="https://github.com/temesotejam/atoms3r-visual-pose-tracker">
-        <p class="step">03 · Source</p>
+      <a class="card link-card"
+         href="https://github.com/temesotejam/atoms3r-visual-pose-tracker">
+        <p class="step">04 · Source</p>
         <h2>GitHub</h2>
         <p>設定値、シリアル出力、ビルド状態を確認します。</p>
         <span>Repository →</span>
@@ -62,16 +95,152 @@
       <p class="step">Current prototype</p>
       <div class="specs">
         <div><b>Camera</b><span>320×240 / grayscale / 15 fps target</span></div>
-        <div><b>Markers</b><span>DICT_4X4_50 ID 0 + ID 1</span></div>
-        <div><b>Tracking</b><span>vertical lane → predicted ROI → recovery</span></div>
+        <div><b>Markers</b><span>DICT_4X4_50 ID 0 + ID 1 / black square 6 mm</span></div>
+        <div><b>Tracking</b><span>ArUco acquire → 2-level local track → ArUco fallback</span></div>
         <div><b>IMU loop</b><span>BMI270, 200 Hz task</span></div>
         <div><b>Output</b><span>921600 baud JSON</span></div>
       </div>
       <p class="small">
+        現段階では <code>center_x_px</code> が主な画像上の運動量です。
         XYZ / 3D角度はカメラ内部パラメータを実機キャリブレーションするまで概算値です。
-        最初は center_y_px、image_angle_deg、処理時間、見失い状態を確認してください。
       </p>
     </section>
   </main>
+
+<script>
+const installer = document.querySelector('#installer');
+const buildInfo = document.querySelector('#buildInfo');
+const manifestUrl = './manifest.json?v=' + Date.now();
+installer.setAttribute('manifest', manifestUrl);
+
+fetch(manifestUrl, {cache: 'no-store'})
+  .then(r => {
+    if (!r.ok) throw new Error('manifest HTTP ' + r.status);
+    return r.json();
+  })
+  .then(m => {
+    buildInfo.textContent = '公開ファーム: ' + (m.version || 'unknown');
+  })
+  .catch(e => {
+    buildInfo.textContent = '公開ファーム情報を取得できません: ' + e.message;
+  });
+
+const connectButton = document.querySelector('#serialConnect');
+const disconnectButton = document.querySelector('#serialDisconnect');
+const copyButton = document.querySelector('#serialCopy');
+const clearButton = document.querySelector('#serialClear');
+const serialStatus = document.querySelector('#serialStatus');
+const serialLog = document.querySelector('#serialLog');
+
+let serialPort = null;
+let serialReader = null;
+let logBuffer = '';
+const MAX_LOG_CHARS = 4000000;
+
+function setSerialState(connected, text) {
+  serialStatus.textContent = text;
+  serialStatus.classList.toggle('connected', connected);
+  connectButton.disabled = connected;
+  disconnectButton.disabled = !connected;
+}
+
+function appendLog(text) {
+  if (serialLog.textContent === '未接続') {
+    serialLog.textContent = '';
+    logBuffer = '';
+  }
+  logBuffer += text;
+  if (logBuffer.length > MAX_LOG_CHARS) {
+    logBuffer = '[older log trimmed]\n' +
+      logBuffer.slice(logBuffer.length - MAX_LOG_CHARS);
+  }
+  serialLog.textContent = logBuffer;
+  serialLog.scrollTop = serialLog.scrollHeight;
+}
+
+async function connectSerial() {
+  if (!('serial' in navigator)) {
+    alert('Web Serialに対応したChrome / Edgeを使用してください。');
+    return;
+  }
+  if (serialPort) return;
+
+  const selectedPort = await navigator.serial.requestPort();
+  await selectedPort.open({baudRate: 921600, bufferSize: 65536});
+  serialPort = selectedPort;
+  setSerialState(true, '接続中 · 921600 baud');
+  appendLog('\n--- serial connected @ 921600 baud ---\n');
+
+  const decoder = new TextDecoder();
+  serialReader = selectedPort.readable.getReader();
+
+  try {
+    while (true) {
+      const {value, done} = await serialReader.read();
+      if (done) break;
+      if (value) appendLog(decoder.decode(value, {stream: true}));
+    }
+  } catch (e) {
+    appendLog('\n[serial error] ' + e + '\n');
+  } finally {
+    try { serialReader.releaseLock(); } catch (_) {}
+    serialReader = null;
+    try { await selectedPort.close(); } catch (_) {}
+    if (serialPort === selectedPort) serialPort = null;
+    setSerialState(false, '未接続');
+    appendLog('\n--- serial disconnected ---\n');
+  }
+}
+
+async function disconnectSerial() {
+  if (serialReader) {
+    await serialReader.cancel();
+    return;
+  }
+  if (serialPort) {
+    try { await serialPort.close(); } catch (_) {}
+    serialPort = null;
+  }
+  setSerialState(false, '未接続');
+}
+
+async function copyLog() {
+  const text = logBuffer || serialLog.textContent || '';
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    document.execCommand('copy');
+    area.remove();
+  }
+
+  const old = copyButton.textContent;
+  copyButton.textContent = 'コピーしました';
+  setTimeout(() => { copyButton.textContent = old; }, 1200);
+}
+
+connectButton.addEventListener('click', () => {
+  connectSerial().catch(e => {
+    appendLog('\n[connect error] ' + e + '\n');
+    setSerialState(false, '接続失敗');
+  });
+});
+disconnectButton.addEventListener('click', () => {
+  disconnectSerial().catch(e => appendLog('\n[disconnect error] ' + e + '\n'));
+});
+copyButton.addEventListener('click', () => {
+  copyLog().catch(e => appendLog('\n[copy error] ' + e + '\n'));
+});
+clearButton.addEventListener('click', () => {
+  logBuffer = '';
+  serialLog.textContent = '';
+});
+</script>
 </body>
 </html>

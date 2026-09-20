@@ -33,14 +33,18 @@ jobs:
       - name: Build firmware
         run: pio run -e atoms3r_cam
 
-      - name: Assemble browser-flashable image
+      - name: Assemble versioned browser-flashable image
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p _site/firmware
           cp -R web/. _site/
+
+          SHORT_SHA="\${GITHUB_SHA:0:12}"
+          FW_FILE="atoms3r-visual-pose-tracker-\${SHORT_SHA}.bin"
+
           python -m esptool --chip esp32s3 merge_bin \
-            -o _site/firmware/atoms3r-visual-pose-tracker.bin \
+            -o "_site/firmware/\${FW_FILE}" \
             --flash_mode dio \
             --flash_freq 80m \
             --flash_size 8MB \
@@ -48,19 +52,37 @@ jobs:
             0x8000 .pio/build/atoms3r_cam/partitions.bin \
             0x10000 .pio/build/atoms3r_cam/firmware.bin
 
-      - name: Publish build metadata
-        shell: bash
-        run: |
           python - <<'PY'
-          import json, os
-          manifest_path = "_site/manifest.json"
-          with open(manifest_path, encoding="utf-8") as f:
-              manifest = json.load(f)
-          manifest["version"] = os.environ["GITHUB_SHA"][:12]
-          with open(manifest_path, "w", encoding="utf-8") as f:
-              json.dump(manifest, f, ensure_ascii=False, indent=2)
-              f.write("\n")
+          import json
+          import os
+          from pathlib import Path
+
+          sha = os.environ["GITHUB_SHA"][:12]
+          fw_file = f"atoms3r-visual-pose-tracker-{sha}.bin"
+          manifest_path = Path("_site/manifest.json")
+          text = manifest_path.read_text(encoding="utf-8")
+          text = text.replace("__VERSION__", sha)
+          text = text.replace("__FIRMWARE_FILE__", fw_file)
+          manifest_path.write_text(text, encoding="utf-8")
+
+          manifest = json.loads(text)
+          actual = manifest["builds"][0]["parts"][0]["path"]
+          expected = f"firmware/{fw_file}"
+          if actual != expected:
+              raise SystemExit(f"manifest path mismatch: {actual} != {expected}")
+          target = Path("_site", actual)
+          if not target.is_file():
+              raise SystemExit(f"manifest target missing: {target}")
+          print("DEPLOY_VERSION=" + manifest["version"])
+          print("DEPLOY_FIRMWARE=" + actual)
+          print("DEPLOY_SIZE=" + str(target.stat().st_size))
           PY
+
+          echo "--- manifest.json ---"
+          cat _site/manifest.json
+          echo
+          echo "--- firmware files ---"
+          ls -lh _site/firmware
 
       - uses: actions/configure-pages@v5
 
@@ -71,7 +93,7 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: \${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
     steps:

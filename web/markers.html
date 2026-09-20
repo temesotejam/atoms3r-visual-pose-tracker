@@ -13,7 +13,7 @@
       <p class="eyebrow">OpenCV DICT_4X4_50</p>
       <h1>Test Markers</h1>
       <p class="lead">
-        黒いマーカー本体（外枠を含む正方形）が50 mmです。
+        現在の実機設定に合わせ、黒いマーカー本体（外枠を含む正方形）は6 mmです。
         周囲の白い余白は認識用のQuiet Zoneなので切り落とさないでください。
         印刷ダイアログは「実際のサイズ / 100%」を使ってください。
       </p>
@@ -23,7 +23,7 @@
   </main>
 
 <script>
-const markerSizeMm = 50;
+const markerSizeMm = 6;
 const codes = [
   { id: 0, word: 0xB532 },
   { id: 1, word: 0x0F9A },
@@ -35,39 +35,41 @@ function bit(word, r, c) {
 }
 
 function markerSvg(code) {
-  const markerCells = 6;       // 1 black border + 4 payload + 1 black border
-  const quietCells = 1;        // explicit white quiet zone on every side
+  const markerCells = 6;
+  const quietCells = 1;
   const totalCells = markerCells + quietCells * 2;
   const cell = 10;
   const size = totalCells * cell;
   const markerOffset = quietCells * cell;
   const printedSizeMm = markerSizeMm * totalCells / markerCells;
 
-  let rects = `<rect width="${size}" height="${size}" fill="white"/>`;
+  let rects = '<rect width="' + size + '" height="' + size + '" fill="white"/>';
   for (let r = 0; r < markerCells; r++) {
     for (let c = 0; c < markerCells; c++) {
       const border = r === 0 || r === 5 || c === 0 || c === 5;
       const black = border || (r > 0 && r < 5 && c > 0 && c < 5 &&
                     bit(code.word, r - 1, c - 1) === 0);
       if (black) {
-        rects += `<rect x="${markerOffset + c*cell}" y="${markerOffset + r*cell}" width="${cell}" height="${cell}" fill="black"/>`;
+        rects += '<rect x="' + (markerOffset + c*cell) +
+          '" y="' + (markerOffset + r*cell) +
+          '" width="' + cell + '" height="' + cell + '" fill="black"/>';
       }
     }
   }
-  return `<svg viewBox="0 0 ${size} ${size}"
-    style="width:${printedSizeMm}mm;height:${printedSizeMm}mm"
-    shape-rendering="crispEdges" aria-label="ArUco marker ID ${code.id}">
-    ${rects}
-  </svg>`;
+
+  return '<svg viewBox="0 0 ' + size + ' ' + size + '"' +
+    ' style="width:' + printedSizeMm + 'mm;height:' + printedSizeMm + 'mm"' +
+    ' shape-rendering="crispEdges" aria-label="ArUco marker ID ' + code.id + '">' +
+    rects + '</svg>';
 }
 
-document.getElementById("markers").innerHTML = codes.map(code => `
-  <article class="marker-card">
-    ${markerSvg(code)}
-    <h2>ID ${code.id}</h2>
-    <p>DICT_4X4_50 · black square ${markerSizeMm} mm</p>
-  </article>
-`).join("");
+document.getElementById('markers').innerHTML = codes.map(code =>
+  '<article class="marker-card">' +
+    markerSvg(code) +
+    '<h2>ID ' + code.id + '</h2>' +
+    '<p>DICT_4X4_50 · black square ' + markerSizeMm + ' mm</p>' +
+  '</article>'
+).join('');
 </script>
 </body>
 </html>
