@@ -86,6 +86,12 @@ static constexpr float kOneDMaxMeanSad = 30.0f;
 // frame; only the cold/full acquisition state is duty-cycled.
 static constexpr int kAcquireDecodeEveryNFrames = 3;
 
+// Diagnostic only: when a previously tracked marker is lost and the normal
+// local ArUco ROI misses, retry the same frame over the full 320x240 image.
+// If this succeeds, the loss was caused by local search/ROI rather than the
+// camera image being undecodable. Disable after the root cause is identified.
+static constexpr bool kEnableFullFrameLossDiagnostic = true;
+
 // Two-level local block tracking remains as a safety fallback behind the 1-D
 // tracker. It is more general (X/Y motion + corner re-fit) but substantially
 // more expensive, so it should normally be bypassed.
