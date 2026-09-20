@@ -28,6 +28,12 @@ static constexpr float kCyPx = 119.5f;
 // planar homography roll/pitch is not considered EKF-grade while this is false.
 static constexpr bool kCameraIntrinsicsCalibrated = false;
 
+// Raw homography 6DoF is diagnostic only and is intentionally disabled in
+// normal operation. The constrained horizontal-motion measurements do not
+// need the 8x8 homography solve/decomposition, so leave this false unless a
+// dedicated camera-calibration / pose-debug experiment needs the raw fields.
+static constexpr bool kEnableRawHomographyPose = false;
+
 // Even after calibration, a nearly fronto-parallel square gives little
 // perspective information about out-of-plane tilt. This relative opposite-edge
 // asymmetry is a conservative first gate; hardware logs should be used to tune
@@ -65,11 +71,24 @@ static constexpr int kMaxMarkerSidePx = 180;
 static constexpr int kMinBlackComponentAreaPx = 90;
 static constexpr int kMaxHammingError = 1;
 
-// M12 VIO hardware testing showed that large inter-frame motion, rather than
-// ESP32-S3 arithmetic budget, is often the first tracking limit. After an
-// ArUco ID has been acquired, track the known marker locally with a two-level
-// block match and fall back to a full ArUco decode whenever that local track
-// is not trustworthy.
+// The mechanism is much more constrained than a general image tracker: each
+// marker stays on its own nearly-fixed horizontal line and only translates a
+// short distance in X. Try an ultra-light 1-D strip match first. It samples
+// only three rows and every other X pixel, then shifts the already-known marker
+// geometry without re-fitting four corners or solving pose.
+static constexpr int kOneDSearchPx = 10;
+static constexpr int kOneDPatchHalfWidthPx = 11;
+static constexpr int kOneDSampleStepPx = 2;
+static constexpr float kOneDMaxMeanSad = 30.0f;
+
+// If the marker is fully lost, do not run the expensive lane-wide ArUco scan
+// on every frame. Recovery around a recent track is still attempted every
+// frame; only the cold/full acquisition state is duty-cycled.
+static constexpr int kAcquireDecodeEveryNFrames = 3;
+
+// Two-level local block tracking remains as a safety fallback behind the 1-D
+// tracker. It is more general (X/Y motion + corner re-fit) but substantially
+// more expensive, so it should normally be bypassed.
 static constexpr int kFlowCoarseSearchPx = 16;
 static constexpr int kFlowRefineSearchPx = 3;
 static constexpr int kFlowCoarsePatchRadiusPx = 6;
