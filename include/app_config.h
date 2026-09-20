@@ -65,6 +65,19 @@ static constexpr int kMaxMarkerSidePx = 180;
 static constexpr int kMinBlackComponentAreaPx = 90;
 static constexpr int kMaxHammingError = 1;
 
+// M12 VIO hardware testing showed that large inter-frame motion, rather than
+// ESP32-S3 arithmetic budget, is often the first tracking limit. After an
+// ArUco ID has been acquired, track the known marker locally with a two-level
+// block match and fall back to a full ArUco decode whenever that local track
+// is not trustworthy.
+static constexpr int kFlowCoarseSearchPx = 16;
+static constexpr int kFlowRefineSearchPx = 3;
+static constexpr int kFlowCoarsePatchRadiusPx = 6;
+static constexpr int kFlowFinePatchRadiusPx = 5;
+static constexpr float kFlowMaxMeanSad = 38.0f;
+static constexpr float kFlowMinSideRatio = 0.65f;
+static constexpr float kFlowMaxSideRatio = 1.55f;
+
 // Lightweight sub-pixel-ish corner refinement. The coarse connected-component
 // extrema are only used to acquire/decode a marker. Once an ID is accepted,
 // each outer black/white edge is re-measured at several locations, a line is

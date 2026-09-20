@@ -7,6 +7,7 @@
   --text: #f4f7fa;
   --muted: #9ba8b4;
   --accent: #e7ff70;
+  --ok: #8df0b2;
 }
 
 * { box-sizing: border-box; }
@@ -78,10 +79,10 @@ h2 {
   align-items: center;
 }
 
-.primary, .secondary {
+.primary, .secondary, .ghost {
   border: 0;
   border-radius: 999px;
-  padding: 14px 20px;
+  padding: 12px 18px;
   font: inherit;
   font-weight: 800;
   cursor: pointer;
@@ -89,15 +90,84 @@ h2 {
 
 .primary { background: var(--accent); color: #10120b; }
 .secondary { background: #fff; color: #111; margin-top: 20px; }
+.ghost {
+  background: #252c34;
+  color: var(--text);
+  border: 1px solid #3a4550;
+}
 
-.hint, .small {
+button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.hint, .small, .build-info {
   grid-column: 1 / -1;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.7;
 }
 
+.build-info {
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+
 .warn { color: #ffb1a7; }
+
+.serial-card { margin-top: 16px; }
+
+.serial-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.status-pill {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-pill.connected {
+  color: var(--ok);
+  border-color: #3e7855;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 14px;
+}
+
+.serial-log {
+  width: 100%;
+  min-height: 300px;
+  max-height: 520px;
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #26313a;
+  border-radius: 14px;
+  background: #050708;
+  color: #d9ffe3;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+code {
+  padding: .1em .35em;
+  border-radius: 5px;
+  background: #080b0e;
+  color: #d9ffe3;
+}
 
 .grid {
   display: grid;
@@ -115,6 +185,7 @@ h2 {
   display: grid;
   gap: 0;
 }
+
 .specs div {
   display: grid;
   grid-template-columns: 150px 1fr;
@@ -122,6 +193,7 @@ h2 {
   padding: 13px 0;
   border-bottom: 1px solid var(--line);
 }
+
 .specs span { color: var(--muted); }
 
 .back { color: var(--muted); text-decoration: none; }
@@ -153,11 +225,14 @@ h2 {
   .install { grid-template-columns: 1fr; }
   .grid, .marker-grid { grid-template-columns: 1fr; }
   .specs div { grid-template-columns: 1fr; gap: 4px; }
+  .serial-head { flex-direction: column; }
 }
 
 @media print {
   body { background: white; color: black; }
-  .back, .hero, .primary, .secondary { display: none !important; }
+  .back, .hero, .primary, .secondary, .ghost, .serial-card {
+    display: none !important;
+  }
   .shell { width: auto; padding: 0; }
   .marker-grid {
     display: flex;

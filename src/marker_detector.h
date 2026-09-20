@@ -15,6 +15,12 @@ public:
     bool detect(const uint8_t* gray, const RectI& roi, int expected_id,
                 MarkerObservation& out);
 
+    // Re-measure the four outer square edges around an already-known
+    // geometrically ordered TL/TR/BR/BL marker. This lets the fast tracker
+    // reuse the same edge-line refinement without decoding the ID every frame.
+    bool refineKnownCorners(const uint8_t* gray, const Point2f coarse[4],
+                            Point2f refined[4]) const;
+
 private:
     struct Candidate {
         bool valid = false;

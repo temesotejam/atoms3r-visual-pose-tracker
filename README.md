@@ -16,6 +16,9 @@ switches to a predicted local ROI after lock.
 - two independent marker trackers
 - upper/lower horizontal acquisition bands
 - predicted local ROI after acquisition
+- two-level local block tracking after a valid lock
+- edge-line corner re-fit after local tracking
+- immediate ArUco fallback when local tracking is not trustworthy
 - expanding recovery ROI after misses
 - fallback to band acquisition instead of immediate full-frame search
 - minimal two-ID ArUco dictionary (`DICT_4X4_50`, IDs 0 and 1)
@@ -29,6 +32,8 @@ switches to a predicted local ROI after lock.
 - JSON telemetry at **921600 baud**
 - GitHub Actions PlatformIO compile test
 - GitHub Pages + ESP Web Tools browser flasher
+- versioned browser-flash BIN paths to avoid stale cached firmware
+- Web Serial monitor at 921600 baud with one-click log copy
 - printable test markers
 
 ## Important: current pose accuracy
@@ -55,7 +60,7 @@ enough perspective asymmetry.
 - Dictionary: OpenCV `DICT_4X4_50`
 - Marker A: ID `0`, upper horizontal band
 - Marker B: ID `1`, lower horizontal band
-- Printed black-square side: `50 mm`
+- Printed black-square side: `6 mm`
 
 The Pages site includes a printable marker sheet.
 
@@ -99,9 +104,12 @@ The current acquisition geometry is approximately:
 +--------------------------------------+
 ```
 
-After a marker is found, only a predicted ROI around its previous
-position/velocity is searched. After several misses the tracker returns to its
-configured horizontal band.
+After a marker is found, the immediately previous grayscale frame is used for a
+two-level local block match around the velocity-predicted center. The known
+square is shifted by that motion and its four outer edges are re-fitted. If the
+local track fails its quality or geometry checks, the same frame falls back to
+ArUco decoding in the predicted ROI. After several misses the tracker returns
+to its configured horizontal band.
 
 ## Serial output
 
@@ -109,7 +117,7 @@ Set the monitor to **921600 baud**.
 
 Every ~100 ms the firmware emits one JSON object containing:
 
-- camera/frame counters
+- camera/frame counters and `frame_dt_us`
 - total vision processing time
 - max observed vision time
 - `motion_axis: "horizontal"`
@@ -117,7 +125,8 @@ Every ~100 ms the firmware emits one JSON object containing:
 - IMU deadline misses
 - max IMU step execution time
 - acceleration / gyro
-- marker validity/state
+- marker validity/state and tracking source (`aruco` / `pyramid` / `none`)
+- local tracking SAD and cumulative flow/decode/reacquire counters
 - pixel position and image-plane angle
 - constrained XYZ estimate
 - perspective asymmetry / tilt reliability
@@ -151,9 +160,10 @@ Core 0 / high priority
 
 Core 1 / non-deadline vision
     GC0308 frame
-      -> Marker A upper-band acquire / predicted ROI
-      -> Marker B lower-band acquire / predicted ROI
-      -> ID + refined corners
+      -> Marker A / Marker B
+      -> ArUco acquire/reacquire when needed
+      -> otherwise two-level local motion tracking
+      -> refined outer corners
       -> constrained horizontal position measurement
       -> raw pose diagnostics
       -> future timestamped EKF correction
@@ -167,12 +177,14 @@ reduce visual update rate, not stall control.
 1. Print ID 0 and ID 1 at the configured physical size.
 2. Flash from the Pages installer.
 3. Open serial at 921600 baud.
-4. Keep both markers still and confirm `valid=true`.
-5. Move each marker horizontally through its normal travel and confirm the tracker stays in `track`.
-6. Confirm `cx_px` follows the motion while `cy_px` remains comparatively constant.
-7. Cover one marker and confirm `track -> recover -> acquire`.
-8. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.
-9. Calibrate the real camera before enabling metric visual corrections in the EKF.
+4. Keep both markers still and confirm `valid=true`; the initial lock should report `source:"aruco"`.
+5. Move each marker horizontally and confirm successful following frames normally report `source:"pyramid"`.
+6. Watch `track_sad`, `flow_fail`, and `reacquire` while increasing motion speed.
+7. Confirm `cx_px` follows the motion while `cy_px` remains comparatively constant.
+8. Cover one marker and confirm recovery returns through ArUco acquisition.
+9. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.
+10. Use the Pages serial monitor to copy the full test log for analysis.
+11. Calibrate the real camera before enabling metric visual corrections in the EKF.
 
 ## Sources used for the initial hardware assumptions
 
