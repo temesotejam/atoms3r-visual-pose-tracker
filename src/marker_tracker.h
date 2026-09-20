@@ -10,12 +10,22 @@ public:
     MarkerTracker(int marker_id, const RectI& lane,
                   MarkerDetector& detector, const PoseEstimator& estimator);
 
-    MarkerObservation process(const uint8_t* gray, uint64_t frame_timestamp_us);
+    MarkerObservation process(const uint8_t* gray,
+                              const uint8_t* previous_gray,
+                              bool have_previous_frame,
+                              uint64_t frame_timestamp_us);
     RectI currentSearchRoi() const { return _last_roi; }
 
 private:
     RectI computeSearchRoi(uint64_t frame_timestamp_us) const;
     RectI clampToFrame(const RectI& r) const;
+    bool trackWithPyramid(const uint8_t* previous_gray,
+                          const uint8_t* gray,
+                          uint64_t frame_timestamp_us,
+                          MarkerObservation& out);
+    bool geometryPlausible(const MarkerObservation& candidate) const;
+    void updateVelocity(const MarkerObservation& current);
+    void stampCounters(MarkerObservation& out) const;
 
     int _id;
     RectI _lane;
@@ -23,9 +33,14 @@ private:
     const PoseEstimator& _estimator;
 
     bool _have_track = false;
+    bool _previous_frame_valid = false;
     int _misses = 0;
     float _vx_px_s = 0.0f;
     float _vy_px_s = 0.0f;
+    uint32_t _flow_successes = 0;
+    uint32_t _flow_failures = 0;
+    uint32_t _decode_successes = 0;
+    uint32_t _reacquires = 0;
     MarkerObservation _last;
     RectI _last_roi;
 };

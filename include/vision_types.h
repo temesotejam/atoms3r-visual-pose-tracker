@@ -63,6 +63,16 @@ struct MarkerObservation {
     float perspective_asymmetry = 0.0f;
     bool tilt_reliable = false;
 
+    // Tracking diagnostics. ArUco is used for acquisition/reacquisition;
+    // flow_tracked marks frames propagated by the two-level local tracker.
+    bool flow_tracked = false;
+    bool decoded_this_frame = false;
+    float track_mean_sad = 0.0f;
+    uint32_t flow_success_count = 0;
+    uint32_t flow_fail_count = 0;
+    uint32_t decode_success_count = 0;
+    uint32_t reacquire_count = 0;
+
     float quality = 0.0f;
     int hamming = 99;
 };

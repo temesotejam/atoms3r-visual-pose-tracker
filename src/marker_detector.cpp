@@ -67,6 +67,12 @@ bool MarkerDetector::begin() {
     return _visited && _queue;
 }
 
+bool MarkerDetector::refineKnownCorners(const uint8_t* gray,
+                                        const Point2f coarse[4],
+                                        Point2f refined[4]) const {
+    return gray && refineCorners(gray, coarse, refined);
+}
+
 RectI MarkerDetector::clampRect(const RectI& in) const {
     RectI r = in;
     if (r.x < 0) { r.w += r.x; r.x = 0; }
