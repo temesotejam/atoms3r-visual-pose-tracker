@@ -30,6 +30,8 @@ private:
     bool geometryPlausible(const MarkerObservation& candidate) const;
     void updateVelocity(const MarkerObservation& current);
     void stampCounters(MarkerObservation& out) const;
+    void resetFrameDiagnostics();
+    void stampDiagnostics(MarkerObservation& out) const;
 
     int _id;
     RectI _lane;
@@ -48,6 +50,24 @@ private:
     uint32_t _flow_failures = 0;
     uint32_t _decode_successes = 0;
     uint32_t _reacquires = 0;
+
+    TrackFailReason _one_d_fail_reason = TrackFailReason::None;
+    int _one_d_pred_x_px = 0;
+    int _one_d_best_x_px = 0;
+    int _one_d_best_offset_px = 0;
+    float _one_d_best_mean_sad = 0.0f;
+
+    TrackFailReason _pyramid_fail_reason = TrackFailReason::None;
+    int _pyramid_pred_x_px = 0;
+    int _pyramid_pred_y_px = 0;
+    int _pyramid_best_x_px = 0;
+    int _pyramid_best_y_px = 0;
+
+    bool _fullframe_aruco_attempted = false;
+    bool _fullframe_aruco_hit = false;
+    bool _fullframe_reacquired = false;
+    uint32_t _fullframe_aruco_us = 0;
+
     MarkerObservation _last;
     RectI _last_roi;
 };
