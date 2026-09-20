@@ -40,11 +40,11 @@ jobs:
           mkdir -p _site/firmware
           cp -R web/. _site/
 
-          SHORT_SHA="\${GITHUB_SHA:0:12}"
-          FW_FILE="atoms3r-visual-pose-tracker-\${SHORT_SHA}.bin"
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          FW_FILE="atoms3r-visual-pose-tracker-${SHORT_SHA}.bin"
 
           python -m esptool --chip esp32s3 merge_bin \
-            -o "_site/firmware/\${FW_FILE}" \
+            -o "_site/firmware/${FW_FILE}" \
             --flash_mode dio \
             --flash_freq 80m \
             --flash_size 8MB \
@@ -93,7 +93,7 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: \${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
     steps:
