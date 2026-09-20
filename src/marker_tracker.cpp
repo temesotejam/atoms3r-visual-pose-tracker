@@ -48,6 +48,45 @@ int patchSampleCount(int radius, int step) {
     return n*n;
 }
 
+// Ultra-light horizontal-only match for the real mechanism. We intentionally
+// sample just three rows through the known marker and every other X pixel.
+// There is no Y search, connected-component scan, corner fit, or homography.
+int stripSad1D(const uint8_t* previous_gray, const uint8_t* gray,
+               int prev_x, int prev_y, int curr_x,
+               int half_width, int sample_step, int row_offset) {
+    if (!previous_gray || !gray || half_width < 1 ||
+        sample_step < 1 || row_offset < 1) {
+        return INT_MAX;
+    }
+
+    if (prev_x - half_width < 0 ||
+        prev_x + half_width >= appcfg::kFrameWidth ||
+        curr_x - half_width < 0 ||
+        curr_x + half_width >= appcfg::kFrameWidth ||
+        prev_y - row_offset < 0 ||
+        prev_y + row_offset >= appcfg::kFrameHeight) {
+        return INT_MAX;
+    }
+
+    const int rows[3] = {prev_y - row_offset, prev_y, prev_y + row_offset};
+    int sad = 0;
+    for (int r = 0; r < 3; ++r) {
+        const uint8_t* prev_row = previous_gray + rows[r] * appcfg::kFrameWidth;
+        const uint8_t* curr_row = gray + rows[r] * appcfg::kFrameWidth;
+        for (int ox = -half_width; ox <= half_width; ox += sample_step) {
+            sad += abs(static_cast<int>(prev_row[prev_x + ox]) -
+                       static_cast<int>(curr_row[curr_x + ox]));
+        }
+    }
+    return sad;
+}
+
+int stripSampleCount(int half_width, int sample_step) {
+    int n = 0;
+    for (int ox = -half_width; ox <= half_width; ox += sample_step) ++n;
+    return 3 * n;
+}
+
 // MarkerDetector refines geometrically ordered TL/TR/BR/BL corners. The
 // tracker's stored corners are canonical marker corners after the ArUco
 // rotation correction, so convert between the two orders around refinement.
@@ -173,10 +212,128 @@ void MarkerTracker::updateVelocity(const MarkerObservation& current) {
 }
 
 void MarkerTracker::stampCounters(MarkerObservation& out) const {
+    out.one_d_success_count = _one_d_successes;
+    out.one_d_fail_count = _one_d_failures;
     out.flow_success_count = _flow_successes;
     out.flow_fail_count = _flow_failures;
     out.decode_success_count = _decode_successes;
     out.reacquire_count = _reacquires;
+}
+
+bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
+                                const uint8_t* gray,
+                                uint64_t frame_timestamp_us,
+                                MarkerObservation& out) {
+    if (!_have_track || !_previous_frame_valid || !_last.valid ||
+        !previous_gray || !gray ||
+        frame_timestamp_us <= _last.frame_timestamp_us) {
+        return false;
+    }
+
+    const float dt = static_cast<float>(
+        frame_timestamp_us - _last.frame_timestamp_us) * 1e-6f;
+    if (dt <= 0.0f || dt > 0.25f) return false;
+
+    const int prev_x = static_cast<int>(lroundf(_last.center_x_px));
+    const int prev_y = static_cast<int>(lroundf(_last.center_y_px));
+    const int pred_x = static_cast<int>(
+        lroundf(_last.center_x_px + _vx_px_s * dt));
+
+    int half_width = static_cast<int>(lroundf(0.42f * _last.side_px));
+    if (half_width < 6) half_width = 6;
+    if (half_width > appcfg::kOneDPatchHalfWidthPx) {
+        half_width = appcfg::kOneDPatchHalfWidthPx;
+    }
+
+    int row_offset = static_cast<int>(lroundf(0.22f * _last.side_px));
+    if (row_offset < 2) row_offset = 2;
+    if (row_offset > 7) row_offset = 7;
+
+    constexpr int kCostCount = 2 * appcfg::kOneDSearchPx + 1;
+    int costs[kCostCount];
+    for (int i = 0; i < kCostCount; ++i) costs[i] = INT_MAX;
+
+    int best_cost = INT_MAX;
+    int best_offset = 0;
+
+    for (int dx = -appcfg::kOneDSearchPx;
+         dx <= appcfg::kOneDSearchPx; ++dx) {
+        const int cost = stripSad1D(
+            previous_gray, gray,
+            prev_x, prev_y, pred_x + dx,
+            half_width, appcfg::kOneDSampleStepPx, row_offset);
+        costs[dx + appcfg::kOneDSearchPx] = cost;
+        if (cost < best_cost) {
+            best_cost = cost;
+            best_offset = dx;
+        }
+    }
+
+    if (best_cost == INT_MAX ||
+        abs(best_offset) >= appcfg::kOneDSearchPx) {
+        return false;
+    }
+
+    const int sample_count =
+        stripSampleCount(half_width, appcfg::kOneDSampleStepPx);
+    const float mean_sad =
+        sample_count > 0
+            ? static_cast<float>(best_cost) / sample_count
+            : 255.0f;
+    if (mean_sad > appcfg::kOneDMaxMeanSad) return false;
+
+    // Cheap sub-pixel interpolation of the 1-D SAD minimum. Clamp to half a
+    // pixel so ambiguous/flat cost curves cannot create a large correction.
+    float sub_px = 0.0f;
+    const int best_i = best_offset + appcfg::kOneDSearchPx;
+    if (best_i > 0 && best_i + 1 < kCostCount &&
+        costs[best_i - 1] != INT_MAX &&
+        costs[best_i + 1] != INT_MAX) {
+        const float l = static_cast<float>(costs[best_i - 1]);
+        const float c = static_cast<float>(costs[best_i]);
+        const float r = static_cast<float>(costs[best_i + 1]);
+        const float denom = l - 2.0f*c + r;
+        if (fabsf(denom) > 1.0f) {
+            sub_px = 0.5f * (l - r) / denom;
+            if (sub_px < -0.5f) sub_px = -0.5f;
+            if (sub_px > 0.5f) sub_px = 0.5f;
+        }
+    }
+
+    const float current_x =
+        static_cast<float>(pred_x + best_offset) + sub_px;
+    const float dx_px = current_x - _last.center_x_px;
+
+    // Keep the last validated square geometry and translate it only in X.
+    // The mechanism itself supplies the missing constraints: Y, scale and
+    // rotation are effectively constant over this short travel.
+    out = _last;
+    out.valid = true;
+    out.corner_refined = false;
+    out.one_d_tracked = true;
+    out.flow_tracked = false;
+    out.decoded_this_frame = false;
+    out.track_mean_sad = mean_sad;
+    out.frame_timestamp_us = frame_timestamp_us;
+    out.state = TrackState::Track;
+    out.center_x_px = _last.center_x_px + dx_px;
+    for (int i = 0; i < 4; ++i) {
+        out.corners[i].x = _last.corners[i].x + dx_px;
+    }
+
+    if (out.constrained_z_m > 0.0f) {
+        out.constrained_x_m =
+            (out.center_x_px - appcfg::kCxPx) *
+            out.constrained_z_m / appcfg::kFxPx;
+    }
+    out.tilt_reliable = false;
+
+    // A dedicated raw-pose debug build may still request a full update.
+    if (appcfg::kEnableRawHomographyPose) {
+        if (!_estimator.estimate(out.corners, out)) return false;
+    }
+
+    return true;
 }
 
 bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
@@ -323,6 +480,19 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
         _have_track && _last.valid && previous_gray;
 
     if (can_flow) {
+        if (trackWith1D(
+                previous_gray, gray, frame_timestamp_us, obs)) {
+            ++_one_d_successes;
+            _misses = 0;
+            updateVelocity(obs);
+            stampCounters(obs);
+            obs.vision_processing_us = micros() - t0;
+            _last = obs;
+            _previous_frame_valid = true;
+            return obs;
+        }
+        ++_one_d_failures;
+
         if (trackWithPyramid(
                 previous_gray, gray, frame_timestamp_us, obs)) {
             ++_flow_successes;
@@ -340,10 +510,31 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     const bool was_recovery =
         _have_track && (_misses > 0 || can_flow);
 
+    const bool full_acquire =
+        !_have_track || _misses >= appcfg::kMaxMissesBeforeLaneAcquire;
+    if (full_acquire && _acquire_decode_cooldown > 0) {
+        --_acquire_decode_cooldown;
+        ++_misses;
+        _vx_px_s *= 0.75f;
+        _vy_px_s = 0.0f;
+
+        obs = MarkerObservation{};
+        obs.id = _id;
+        obs.frame_timestamp_us = frame_timestamp_us;
+        obs.valid = false;
+        obs.state = TrackState::Acquire;
+        stampCounters(obs);
+        obs.vision_processing_us = micros() - t0;
+        _previous_frame_valid = false;
+        return obs;
+    }
+    _acquire_decode_cooldown =
+        full_acquire ? (appcfg::kAcquireDecodeEveryNFrames - 1) : 0;
+
     if (!_detector.detect(gray, _last_roi, _id, obs)) {
         ++_misses;
         _vx_px_s *= 0.75f;
-        _vy_px_s *= 0.75f;
+        _vy_px_s = 0.0f;
 
         obs = MarkerObservation{};
         obs.id = _id;
@@ -381,6 +572,8 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     ++_decode_successes;
     if (was_recovery) ++_reacquires;
 
+    _acquire_decode_cooldown = 0;
+    obs.one_d_tracked = false;
     obs.decoded_this_frame = true;
     obs.flow_tracked = false;
     obs.track_mean_sad = 0.0f;
