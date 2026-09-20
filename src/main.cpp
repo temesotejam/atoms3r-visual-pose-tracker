@@ -52,8 +52,23 @@ const char* stateName(TrackState state) {
 const char* sourceName(const MarkerObservation& m) {
     if (m.one_d_tracked) return "1d";
     if (m.flow_tracked) return "pyramid";
+    if (m.fullframe_reacquired) return "aruco_fullframe";
     if (m.decoded_this_frame) return "aruco";
     return "none";
+}
+
+const char* failReasonName(TrackFailReason reason) {
+    switch (reason) {
+        case TrackFailReason::Preconditions: return "preconditions";
+        case TrackFailReason::Timing: return "timing";
+        case TrackFailReason::Bounds: return "bounds";
+        case TrackFailReason::SearchBoundary: return "search_boundary";
+        case TrackFailReason::Sad: return "sad";
+        case TrackFailReason::Refine: return "refine";
+        case TrackFailReason::Pose: return "pose";
+        case TrackFailReason::Geometry: return "geometry";
+        default: return "none";
+    }
 }
 
 void controlStep(const ImuTelemetry&) {
@@ -113,6 +128,12 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         "\"refined\":%s,\"track_sad\":%.2f,"
         "\"track1d_ok\":%u,\"track1d_fail\":%u,"
         "\"flow_ok\":%u,\"flow_fail\":%u,\"decode_ok\":%u,\"reacquire\":%u,"
+        "\"track1d_diag\":{\"fail\":\"%s\",\"pred_x\":%d,\"best_x\":%d,"
+        "\"best_dx\":%d,\"best_sad\":%.2f},"
+        "\"pyramid_diag\":{\"fail\":\"%s\",\"pred_x\":%d,\"pred_y\":%d,"
+        "\"best_x\":%d,\"best_y\":%d},"
+        "\"aruco_diag\":{\"roi\":[%d,%d,%d,%d],\"full_attempt\":%s,"
+        "\"full_hit\":%s,\"full_us\":%u},"
         "\"cx_px\":%.2f,\"cy_px\":%.2f,\"side_px\":%.2f,"
         "\"image_angle_deg\":%.2f,"
         "\"constrained_x_m\":%.5f,\"constrained_y_m\":%.5f,"
@@ -131,6 +152,17 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         m.one_d_success_count, m.one_d_fail_count,
         m.flow_success_count, m.flow_fail_count,
         m.decode_success_count, m.reacquire_count,
+        failReasonName(m.one_d_fail_reason),
+        m.one_d_pred_x_px, m.one_d_best_x_px,
+        m.one_d_best_offset_px, m.one_d_best_mean_sad,
+        failReasonName(m.pyramid_fail_reason),
+        m.pyramid_pred_x_px, m.pyramid_pred_y_px,
+        m.pyramid_best_x_px, m.pyramid_best_y_px,
+        m.aruco_local_roi.x, m.aruco_local_roi.y,
+        m.aruco_local_roi.w, m.aruco_local_roi.h,
+        m.fullframe_aruco_attempted ? "true" : "false",
+        m.fullframe_aruco_hit ? "true" : "false",
+        m.fullframe_aruco_us,
         m.center_x_px, m.center_y_px, m.side_px,
         m.image_angle_deg,
         m.constrained_x_m, m.constrained_y_m, m.constrained_z_m,
@@ -141,7 +173,8 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         m.vision_processing_us);
 }
 
-void printTelemetry(const MarkerObservation& a,
+void printTelemetry(const CameraFrame& frame,
+                    const MarkerObservation& a,
                     const MarkerObservation& b,
                     uint32_t total_vision_us) {
     ImuTelemetry imu;
@@ -152,6 +185,7 @@ void printTelemetry(const MarkerObservation& a,
     Serial.printf(
         "{\"t_us\":%llu,\"frame\":%u,\"frame_dt_us\":%u,"
         "\"camera_failures\":%u,"
+        "\"camera\":{\"width\":%d,\"height\":%d,\"bytes\":%u},"
         "\"vision_total_us\":%u,\"vision_max_us\":%u,"
         "\"motion_axis\":\"horizontal\","
         "\"imu\":{\"enabled\":%s,\"loops\":%u,\"misses\":%u,"
@@ -159,6 +193,7 @@ void printTelemetry(const MarkerObservation& a,
         "\"gx\":%.5f,\"gy\":%.5f,\"gz\":%.5f},",
         static_cast<unsigned long long>(esp_timer_get_time()),
         g_frame_count, g_frame_dt_us, g_camera_failures,
+        frame.width, frame.height, static_cast<unsigned>(frame.length),
         total_vision_us, g_max_vision_us,
         imu.enabled ? "true" : "false",
         imu.loop_count, imu.deadline_misses, imu.max_step_us,
@@ -183,6 +218,8 @@ void setup() {
     Serial.println("Motion model: horizontal; A upper band, B lower band");
     Serial.println(
         "Tracking: constrained 1D X first, pyramid fallback, ArUco reacquire");
+    Serial.println(
+        "Diagnostic: local-loss full-frame ArUco retry enabled");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
@@ -285,7 +322,7 @@ void loop() {
     const uint32_t now_ms = millis();
     if (now_ms - g_last_telemetry_ms >= appcfg::kTelemetryPeriodMs) {
         g_last_telemetry_ms = now_ms;
-        printTelemetry(a, b, vision_us);
+        printTelemetry(frame, a, b, vision_us);
     }
 
     delay(1);
