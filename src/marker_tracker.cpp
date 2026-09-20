@@ -211,6 +211,45 @@ void MarkerTracker::updateVelocity(const MarkerObservation& current) {
     }
 }
 
+void MarkerTracker::resetFrameDiagnostics() {
+    _one_d_fail_reason = TrackFailReason::None;
+    _one_d_pred_x_px = 0;
+    _one_d_best_x_px = 0;
+    _one_d_best_offset_px = 0;
+    _one_d_best_mean_sad = 0.0f;
+
+    _pyramid_fail_reason = TrackFailReason::None;
+    _pyramid_pred_x_px = 0;
+    _pyramid_pred_y_px = 0;
+    _pyramid_best_x_px = 0;
+    _pyramid_best_y_px = 0;
+
+    _fullframe_aruco_attempted = false;
+    _fullframe_aruco_hit = false;
+    _fullframe_reacquired = false;
+    _fullframe_aruco_us = 0;
+}
+
+void MarkerTracker::stampDiagnostics(MarkerObservation& out) const {
+    out.one_d_fail_reason = _one_d_fail_reason;
+    out.one_d_pred_x_px = _one_d_pred_x_px;
+    out.one_d_best_x_px = _one_d_best_x_px;
+    out.one_d_best_offset_px = _one_d_best_offset_px;
+    out.one_d_best_mean_sad = _one_d_best_mean_sad;
+
+    out.pyramid_fail_reason = _pyramid_fail_reason;
+    out.pyramid_pred_x_px = _pyramid_pred_x_px;
+    out.pyramid_pred_y_px = _pyramid_pred_y_px;
+    out.pyramid_best_x_px = _pyramid_best_x_px;
+    out.pyramid_best_y_px = _pyramid_best_y_px;
+
+    out.aruco_local_roi = _last_roi;
+    out.fullframe_aruco_attempted = _fullframe_aruco_attempted;
+    out.fullframe_aruco_hit = _fullframe_aruco_hit;
+    out.fullframe_reacquired = _fullframe_reacquired;
+    out.fullframe_aruco_us = _fullframe_aruco_us;
+}
+
 void MarkerTracker::stampCounters(MarkerObservation& out) const {
     out.one_d_success_count = _one_d_successes;
     out.one_d_fail_count = _one_d_failures;
@@ -218,6 +257,7 @@ void MarkerTracker::stampCounters(MarkerObservation& out) const {
     out.flow_fail_count = _flow_failures;
     out.decode_success_count = _decode_successes;
     out.reacquire_count = _reacquires;
+    stampDiagnostics(out);
 }
 
 bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
@@ -227,17 +267,22 @@ bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
     if (!_have_track || !_previous_frame_valid || !_last.valid ||
         !previous_gray || !gray ||
         frame_timestamp_us <= _last.frame_timestamp_us) {
+        _one_d_fail_reason = TrackFailReason::Preconditions;
         return false;
     }
 
     const float dt = static_cast<float>(
         frame_timestamp_us - _last.frame_timestamp_us) * 1e-6f;
-    if (dt <= 0.0f || dt > 0.25f) return false;
+    if (dt <= 0.0f || dt > 0.25f) {
+        _one_d_fail_reason = TrackFailReason::Timing;
+        return false;
+    }
 
     const int prev_x = static_cast<int>(lroundf(_last.center_x_px));
     const int prev_y = static_cast<int>(lroundf(_last.center_y_px));
     const int pred_x = static_cast<int>(
         lroundf(_last.center_x_px + _vx_px_s * dt));
+    _one_d_pred_x_px = pred_x;
 
     int half_width = static_cast<int>(lroundf(0.42f * _last.side_px));
     if (half_width < 6) half_width = 6;
@@ -269,8 +314,15 @@ bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
         }
     }
 
-    if (best_cost == INT_MAX ||
-        abs(best_offset) >= appcfg::kOneDSearchPx) {
+    _one_d_best_offset_px = best_offset;
+    _one_d_best_x_px = pred_x + best_offset;
+
+    if (best_cost == INT_MAX) {
+        _one_d_fail_reason = TrackFailReason::Bounds;
+        return false;
+    }
+    if (abs(best_offset) >= appcfg::kOneDSearchPx) {
+        _one_d_fail_reason = TrackFailReason::SearchBoundary;
         return false;
     }
 
@@ -280,7 +332,11 @@ bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
         sample_count > 0
             ? static_cast<float>(best_cost) / sample_count
             : 255.0f;
-    if (mean_sad > appcfg::kOneDMaxMeanSad) return false;
+    _one_d_best_mean_sad = mean_sad;
+    if (mean_sad > appcfg::kOneDMaxMeanSad) {
+        _one_d_fail_reason = TrackFailReason::Sad;
+        return false;
+    }
 
     // Cheap sub-pixel interpolation of the 1-D SAD minimum. Clamp to half a
     // pixel so ambiguous/flat cost curves cannot create a large correction.
@@ -343,12 +399,16 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
     if (!_have_track || !_previous_frame_valid || !_last.valid ||
         !previous_gray || !gray ||
         frame_timestamp_us <= _last.frame_timestamp_us) {
+        _pyramid_fail_reason = TrackFailReason::Preconditions;
         return false;
     }
 
     const float dt = static_cast<float>(
         frame_timestamp_us - _last.frame_timestamp_us) * 1e-6f;
-    if (dt <= 0.0f || dt > 0.25f) return false;
+    if (dt <= 0.0f || dt > 0.25f) {
+        _pyramid_fail_reason = TrackFailReason::Timing;
+        return false;
+    }
 
     const int prev_x = static_cast<int>(lroundf(_last.center_x_px));
     const int prev_y = static_cast<int>(lroundf(_last.center_y_px));
@@ -356,6 +416,8 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
         lroundf(_last.center_x_px + _vx_px_s * dt));
     const int pred_y = static_cast<int>(
         lroundf(_last.center_y_px + _vy_px_s * dt));
+    _pyramid_pred_x_px = pred_x;
+    _pyramid_pred_y_px = pred_y;
 
     int coarse_best = INT_MAX;
     int coarse_x = pred_x;
@@ -379,13 +441,19 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
         }
     }
 
-    if (coarse_best == INT_MAX) return false;
+    _pyramid_best_x_px = coarse_x;
+    _pyramid_best_y_px = coarse_y;
+    if (coarse_best == INT_MAX) {
+        _pyramid_fail_reason = TrackFailReason::Bounds;
+        return false;
+    }
 
     // A best match exactly at the coarse boundary means the true displacement
     // may lie outside the searched region. Decode the marker again instead of
     // accepting a clipped optical-flow estimate.
     if (abs(coarse_x - pred_x) >= appcfg::kFlowCoarseSearchPx ||
         abs(coarse_y - pred_y) >= appcfg::kFlowCoarseSearchPx) {
+        _pyramid_fail_reason = TrackFailReason::SearchBoundary;
         return false;
     }
 
@@ -411,14 +479,22 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
         }
     }
 
-    if (fine_best == INT_MAX) return false;
+    _pyramid_best_x_px = fine_x;
+    _pyramid_best_y_px = fine_y;
+    if (fine_best == INT_MAX) {
+        _pyramid_fail_reason = TrackFailReason::Bounds;
+        return false;
+    }
 
     const int sample_count =
         patchSampleCount(appcfg::kFlowFinePatchRadiusPx, 1);
     const float mean_sad =
         sample_count > 0 ? static_cast<float>(fine_best) / sample_count
                          : 255.0f;
-    if (mean_sad > appcfg::kFlowMaxMeanSad) return false;
+    if (mean_sad > appcfg::kFlowMaxMeanSad) {
+        _pyramid_fail_reason = TrackFailReason::Sad;
+        return false;
+    }
 
     const float dx = static_cast<float>(fine_x - prev_x);
     const float dy = static_cast<float>(fine_y - prev_y);
@@ -438,6 +514,7 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
     Point2f refined_geometric[4];
     if (!_detector.refineKnownCorners(
             gray, coarse_geometric, refined_geometric)) {
+        _pyramid_fail_reason = TrackFailReason::Refine;
         return false;
     }
 
@@ -460,8 +537,14 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
 
     for (int i = 0; i < 4; ++i) out.corners[i] = refined_canonical[i];
 
-    if (!_estimator.estimate(refined_canonical, out)) return false;
-    if (!geometryPlausible(out)) return false;
+    if (!_estimator.estimate(refined_canonical, out)) {
+        _pyramid_fail_reason = TrackFailReason::Pose;
+        return false;
+    }
+    if (!geometryPlausible(out)) {
+        _pyramid_fail_reason = TrackFailReason::Geometry;
+        return false;
+    }
     return true;
 }
 
@@ -469,6 +552,8 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
                                          const uint8_t* previous_gray,
                                          bool have_previous_frame,
                                          uint64_t frame_timestamp_us) {
+    resetFrameDiagnostics();
+
     MarkerObservation obs;
     obs.id = _id;
     obs.frame_timestamp_us = frame_timestamp_us;
@@ -531,7 +616,30 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     _acquire_decode_cooldown =
         full_acquire ? (appcfg::kAcquireDecodeEveryNFrames - 1) : 0;
 
-    if (!_detector.detect(gray, _last_roi, _id, obs)) {
+    bool aruco_found = _detector.detect(gray, _last_roi, _id, obs);
+
+    // Root-cause diagnostic: if a marker that was previously tracked is not
+    // found inside the normal local/lane ROI, retry the exact same image over
+    // the entire framebuffer. A hit here proves the camera still saw/decoded
+    // the marker and the loss was caused by our local search region.
+    if (!aruco_found &&
+        appcfg::kEnableFullFrameLossDiagnostic &&
+        was_recovery &&
+        !(_last_roi.x == 0 && _last_roi.y == 0 &&
+          _last_roi.w == appcfg::kFrameWidth &&
+          _last_roi.h == appcfg::kFrameHeight)) {
+        _fullframe_aruco_attempted = true;
+        const uint32_t full_t0 = micros();
+        const RectI full_frame{
+            0, 0, appcfg::kFrameWidth, appcfg::kFrameHeight
+        };
+        aruco_found = _detector.detect(gray, full_frame, _id, obs);
+        _fullframe_aruco_us = micros() - full_t0;
+        _fullframe_aruco_hit = aruco_found;
+        _fullframe_reacquired = aruco_found;
+    }
+
+    if (!aruco_found) {
         ++_misses;
         _vx_px_s *= 0.75f;
         _vy_px_s = 0.0f;
