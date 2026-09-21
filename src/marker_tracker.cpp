@@ -212,6 +212,12 @@ void MarkerTracker::updateVelocity(const MarkerObservation& current) {
 }
 
 void MarkerTracker::resetFrameDiagnostics() {
+    _wide_last_sad = 0.0f;
+    _wide_last_contrast = 0;
+    _wide_last_x = 0;
+    _wide_last_y = 0;
+    _wide_last_us = 0;
+
     _one_d_fail_reason = TrackFailReason::None;
     _one_d_pred_x_px = 0;
     _one_d_best_x_px = 0;
@@ -231,6 +237,12 @@ void MarkerTracker::resetFrameDiagnostics() {
 }
 
 void MarkerTracker::stampDiagnostics(MarkerObservation& out) const {
+    out.wide_template_sad = _wide_last_sad;
+    out.wide_template_contrast = _wide_last_contrast;
+    out.wide_template_x_px = _wide_last_x;
+    out.wide_template_y_px = _wide_last_y;
+    out.wide_template_us = _wide_last_us;
+
     out.one_d_fail_reason = _one_d_fail_reason;
     out.one_d_pred_x_px = _one_d_pred_x_px;
     out.one_d_best_x_px = _one_d_best_x_px;
@@ -251,8 +263,8 @@ void MarkerTracker::stampDiagnostics(MarkerObservation& out) const {
 }
 
 void MarkerTracker::stampCounters(MarkerObservation& out) const {
-    out.stroke_success_count = _stroke_successes;
-    out.stroke_fail_count = _stroke_failures;
+    out.wide_template_success_count = _wide_template_successes;
+    out.wide_template_fail_count = _wide_template_failures;
     out.one_d_success_count = _one_d_successes;
     out.one_d_fail_count = _one_d_failures;
     out.flow_success_count = _flow_successes;
@@ -262,40 +274,194 @@ void MarkerTracker::stampCounters(MarkerObservation& out) const {
     stampDiagnostics(out);
 }
 
-bool MarkerTracker::trackWithFullStroke(
+bool MarkerTracker::captureWideTemplate(
     const uint8_t* gray,
-    int global_threshold,
-    uint64_t frame_timestamp_us,
-    MarkerObservation& out) {
-    if (!_have_track || !_last.valid || !gray) return false;
+    const MarkerObservation& reference) {
+    if (!gray || !reference.valid) return false;
 
-    MarkerDetector::StrokeMatch match;
-    if (!_detector.locateFullStroke1D(
-            gray, global_threshold,
-            _id, _last.rotation,
-            _last.center_y_px, _last.side_px,
-            match)) {
+    const int cx = static_cast<int>(lroundf(reference.center_x_px));
+    const int cy = static_cast<int>(lroundf(reference.center_y_px));
+    const int half = appcfg::kWideTemplateHalfWidthPx;
+
+    int row_step = static_cast<int>(lroundf(reference.side_px * 0.14f));
+    if (row_step < 3) row_step = 3;
+    if (row_step > 5) row_step = 5;
+    const int row_half =
+        (appcfg::kWideTemplateRows / 2) * row_step;
+
+    if (cx - half < 0 || cx + half >= appcfg::kFrameWidth ||
+        cy - row_half < 0 || cy + row_half >= appcfg::kFrameHeight) {
         return false;
     }
 
-    const float dx = match.center_x_px - _last.center_x_px;
-    const float dy = match.center_y_px - _last.center_y_px;
+    int index = 0;
+    int sum = 0;
+    int min_v = 255;
+    int max_v = 0;
+    for (int r = 0; r < appcfg::kWideTemplateRows; ++r) {
+        const int oy =
+            (r - appcfg::kWideTemplateRows / 2) * row_step;
+        const uint8_t* row =
+            gray + (cy + oy) * appcfg::kFrameWidth;
+        for (int ox = -half; ox <= half;
+             ox += appcfg::kWideTemplateSampleStepPx) {
+            const int v = row[cx + ox];
+            _wide_template[index++] = static_cast<uint8_t>(v);
+            sum += v;
+            if (v < min_v) min_v = v;
+            if (v > max_v) max_v = v;
+        }
+    }
+
+    if (index != kWideTemplateSamples ||
+        max_v - min_v < appcfg::kWideTemplateMinContrast) {
+        return false;
+    }
+
+    _wide_template_mean = sum / kWideTemplateSamples;
+    _wide_template_center_y = cy;
+    _wide_template_row_step = row_step;
+    _wide_template_side_px = reference.side_px;
+    _wide_template_valid = true;
+    return true;
+}
+
+bool MarkerTracker::trackWithWideTemplate(
+    const uint8_t* gray,
+    uint64_t frame_timestamp_us,
+    MarkerObservation& out) {
+    const uint32_t t0 = micros();
+    if (!_have_track || !_last.valid || !_wide_template_valid || !gray) {
+        _wide_last_us = micros() - t0;
+        return false;
+    }
+
+    const int half = appcfg::kWideTemplateHalfWidthPx;
+    const int row_half =
+        (appcfg::kWideTemplateRows / 2) * _wide_template_row_step;
+
+    auto evaluate = [&](int cx, int cy, int* contrast_out) -> float {
+        if (cx - half < 0 || cx + half >= appcfg::kFrameWidth ||
+            cy - row_half < 0 || cy + row_half >= appcfg::kFrameHeight) {
+            return 1.0e9f;
+        }
+
+        int sum = 0;
+        int min_v = 255;
+        int max_v = 0;
+        for (int r = 0; r < appcfg::kWideTemplateRows; ++r) {
+            const int oy =
+                (r - appcfg::kWideTemplateRows / 2) *
+                _wide_template_row_step;
+            const uint8_t* row =
+                gray + (cy + oy) * appcfg::kFrameWidth;
+            for (int ox = -half; ox <= half;
+                 ox += appcfg::kWideTemplateSampleStepPx) {
+                const int v = row[cx + ox];
+                sum += v;
+                if (v < min_v) min_v = v;
+                if (v > max_v) max_v = v;
+            }
+        }
+
+        const int contrast = max_v - min_v;
+        if (contrast_out) *contrast_out = contrast;
+        if (contrast < appcfg::kWideTemplateMinContrast) {
+            return 1.0e9f;
+        }
+
+        const int candidate_mean = sum / kWideTemplateSamples;
+        int sad = 0;
+        int index = 0;
+        for (int r = 0; r < appcfg::kWideTemplateRows; ++r) {
+            const int oy =
+                (r - appcfg::kWideTemplateRows / 2) *
+                _wide_template_row_step;
+            const uint8_t* row =
+                gray + (cy + oy) * appcfg::kFrameWidth;
+            for (int ox = -half; ox <= half;
+                 ox += appcfg::kWideTemplateSampleStepPx) {
+                const int centered_current =
+                    static_cast<int>(row[cx + ox]) - candidate_mean;
+                const int centered_template =
+                    static_cast<int>(_wide_template[index++]) -
+                    _wide_template_mean;
+                sad += abs(centered_current - centered_template);
+            }
+        }
+
+        return static_cast<float>(sad) / kWideTemplateSamples;
+    };
+
+    const int base_y = static_cast<int>(lroundf(_last.center_y_px));
+    float best_sad = 1.0e9f;
+    int best_x = 0;
+    int best_y = base_y;
+    int best_contrast = 0;
+
+    const int x0 = half;
+    const int x1 = appcfg::kFrameWidth - half - 1;
+    for (int dy = -appcfg::kWideTemplateYSearchPx;
+         dy <= appcfg::kWideTemplateYSearchPx;
+         dy += appcfg::kWideTemplateYStepPx) {
+        const int cy = base_y + dy;
+        for (int cx = x0; cx <= x1;
+             cx += appcfg::kWideTemplateCoarseStepPx) {
+            int contrast = 0;
+            const float score = evaluate(cx, cy, &contrast);
+            if (score < best_sad) {
+                best_sad = score;
+                best_x = cx;
+                best_y = cy;
+                best_contrast = contrast;
+            }
+        }
+    }
+
+    if (best_sad < 1.0e8f) {
+        const int coarse_x = best_x;
+        const int coarse_y = best_y;
+        for (int cy = coarse_y - 1; cy <= coarse_y + 1; ++cy) {
+            for (int cx = coarse_x - appcfg::kWideTemplateCoarseStepPx + 1;
+                 cx <= coarse_x + appcfg::kWideTemplateCoarseStepPx - 1;
+                 ++cx) {
+                int contrast = 0;
+                const float score = evaluate(cx, cy, &contrast);
+                if (score < best_sad) {
+                    best_sad = score;
+                    best_x = cx;
+                    best_y = cy;
+                    best_contrast = contrast;
+                }
+            }
+        }
+    }
+
+    _wide_last_sad = best_sad < 1.0e8f ? best_sad : 255.0f;
+    _wide_last_contrast = best_contrast;
+    _wide_last_x = best_x;
+    _wide_last_y = best_y;
+    _wide_last_us = micros() - t0;
+
+    if (best_sad > appcfg::kWideTemplateMaxMeanSad) {
+        return false;
+    }
+
+    const float dx = static_cast<float>(best_x) - _last.center_x_px;
+    const float dy = static_cast<float>(best_y) - _last.center_y_px;
 
     out = _last;
     out.valid = true;
     out.corner_refined = false;
-    out.stroke_tracked = true;
+    out.wide_template_tracked = true;
     out.one_d_tracked = false;
     out.flow_tracked = false;
     out.decoded_this_frame = false;
-    out.stroke_score = match.score;
-    out.stroke_hamming = match.hamming;
-    out.stroke_border_black = match.border_black;
     out.track_mean_sad = 0.0f;
     out.frame_timestamp_us = frame_timestamp_us;
     out.state = TrackState::Track;
-    out.center_x_px = match.center_x_px;
-    out.center_y_px = match.center_y_px;
+    out.center_x_px = static_cast<float>(best_x);
+    out.center_y_px = static_cast<float>(best_y);
 
     for (int i = 0; i < 4; ++i) {
         out.corners[i].x = _last.corners[i].x + dx;
@@ -424,13 +590,15 @@ bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
     out = _last;
     out.valid = true;
     out.corner_refined = false;
-    out.stroke_tracked = false;
+    out.wide_template_tracked = false;
     out.one_d_tracked = true;
     out.flow_tracked = false;
     out.decoded_this_frame = false;
-    out.stroke_score = 0.0f;
-    out.stroke_hamming = 99;
-    out.stroke_border_black = 0;
+    out.wide_template_sad = 0.0f;
+    out.wide_template_contrast = 0;
+    out.wide_template_x_px = 0;
+    out.wide_template_y_px = 0;
+    out.wide_template_us = 0;
     out.track_mean_sad = mean_sad;
     out.frame_timestamp_us = frame_timestamp_us;
     out.state = TrackState::Track;
@@ -614,7 +782,7 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
                                          const uint8_t* previous_gray,
                                          bool have_previous_frame,
                                          uint64_t frame_timestamp_us,
-                                         int global_threshold) {
+                                         int& aruco_threshold_cache) {
     resetFrameDiagnostics();
 
     MarkerObservation obs;
@@ -624,30 +792,12 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
 
     const uint32_t t0 = micros();
 
-    // Primary path: search the whole physical stroke in the current frame.
-    // It does not depend on the previous-frame displacement, so a fast jump
-    // across the old +/-10/16 px windows can still be recovered immediately.
-    if (_have_track && _last.valid) {
-        if (trackWithFullStroke(
-                gray, global_threshold, frame_timestamp_us, obs)) {
-            ++_stroke_successes;
-            _misses = 0;
-            updateVelocity(obs);
-            _acquire_decode_cooldown =
-                appcfg::kRecoveryDecodeEveryNFrames - 1;
-            stampCounters(obs);
-            obs.vision_processing_us = micros() - t0;
-            _last = obs;
-            _previous_frame_valid = true;
-            return obs;
-        }
-        ++_stroke_failures;
-    }
-
     const bool can_flow =
         have_previous_frame && _previous_frame_valid &&
         _have_track && _last.valid && previous_gray;
 
+    // Normal fast path: previous-frame local 1-D. Hardware logs show this is
+    // the best combination of reliability and cost for both markers.
     if (can_flow) {
         if (trackWith1D(
                 previous_gray, gray, frame_timestamp_us, obs)) {
@@ -663,12 +813,39 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
             return obs;
         }
         ++_one_d_failures;
+    }
 
+    // Recovery path: search the full X stroke with the compact REAL image
+    // template. This can recover a jump far beyond the local +/-10 px window
+    // without paying the old full-stroke ArUco-cell scan every frame.
+    const bool can_wide =
+        _have_track && _last.valid && _wide_template_valid;
+    if (can_wide) {
+        if (trackWithWideTemplate(
+                gray, frame_timestamp_us, obs)) {
+            ++_wide_template_successes;
+            _misses = 0;
+            updateVelocity(obs);
+            _acquire_decode_cooldown =
+                appcfg::kRecoveryDecodeEveryNFrames - 1;
+            stampCounters(obs);
+            obs.vision_processing_us = micros() - t0;
+            _last = obs;
+            _previous_frame_valid = true;
+            return obs;
+        }
+        ++_wide_template_failures;
+    }
+
+    // Keep the more general two-level tracker as the next safety net when the
+    // immediately previous frame is still trustworthy.
+    if (can_flow) {
         if (trackWithPyramid(
                 previous_gray, gray, frame_timestamp_us, obs)) {
             ++_flow_successes;
             _misses = 0;
             updateVelocity(obs);
+            captureWideTemplate(gray, obs);
             _acquire_decode_cooldown =
                 appcfg::kRecoveryDecodeEveryNFrames - 1;
             stampCounters(obs);
@@ -681,7 +858,7 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     }
 
     const bool was_recovery =
-        _have_track && (_misses > 0 || can_flow);
+        _have_track && (_misses > 0 || can_flow || can_wide);
 
     const int decode_period =
         _have_track
@@ -709,8 +886,11 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     }
     _acquire_decode_cooldown = decode_period > 0 ? decode_period - 1 : 0;
 
+    if (aruco_threshold_cache < 0) {
+        aruco_threshold_cache = _detector.computeGlobalThreshold(gray);
+    }
     bool aruco_found = _detector.detect(
-        gray, _last_roi, _id, obs, global_threshold);
+        gray, _last_roi, _id, obs, aruco_threshold_cache);
 
     // Root-cause diagnostic: if a marker that was previously tracked is not
     // found inside the normal local/lane ROI, retry the exact same image over
@@ -728,7 +908,7 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
             0, 0, appcfg::kFrameWidth, appcfg::kFrameHeight
         };
         aruco_found = _detector.detect(
-            gray, full_frame, _id, obs, global_threshold);
+            gray, full_frame, _id, obs, aruco_threshold_cache);
         _fullframe_aruco_us = micros() - full_t0;
         _fullframe_aruco_hit = aruco_found;
         _fullframe_reacquired = aruco_found;
@@ -777,7 +957,7 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
 
     _acquire_decode_cooldown =
         appcfg::kRecoveryDecodeEveryNFrames - 1;
-    obs.stroke_tracked = false;
+    obs.wide_template_tracked = false;
     obs.one_d_tracked = false;
     obs.decoded_this_frame = true;
     obs.flow_tracked = false;
@@ -787,6 +967,7 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     updateVelocity(obs);
     _misses = 0;
     _have_track = true;
+    captureWideTemplate(gray, obs);
     stampCounters(obs);
     obs.vision_processing_us = micros() - t0;
     _last = obs;
