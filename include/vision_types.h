@@ -132,6 +132,14 @@ struct ImuTelemetry {
     float gy = 0.0f;
     float gz = 0.0f;
 
+    // Body-tilt calibration telemetry. On the current mount the main body
+    // rotation is about IMU Y; upright is approximately ax=-1 g, az=0 g.
+    float accel_norm_g = 0.0f;
+    float gyro_norm_dps = 0.0f;
+    float body_tilt_acc_deg = 0.0f;
+    float body_tilt_cf_deg = 0.0f;
+    bool tilt_static = false;
+
     uint32_t loop_count = 0;
     uint32_t deadline_misses = 0;
     uint32_t max_step_us = 0;
