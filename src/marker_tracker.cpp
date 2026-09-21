@@ -251,6 +251,8 @@ void MarkerTracker::stampDiagnostics(MarkerObservation& out) const {
 }
 
 void MarkerTracker::stampCounters(MarkerObservation& out) const {
+    out.stroke_success_count = _stroke_successes;
+    out.stroke_fail_count = _stroke_failures;
     out.one_d_success_count = _one_d_successes;
     out.one_d_fail_count = _one_d_failures;
     out.flow_success_count = _flow_successes;
@@ -258,6 +260,62 @@ void MarkerTracker::stampCounters(MarkerObservation& out) const {
     out.decode_success_count = _decode_successes;
     out.reacquire_count = _reacquires;
     stampDiagnostics(out);
+}
+
+bool MarkerTracker::trackWithFullStroke(
+    const uint8_t* gray,
+    int global_threshold,
+    uint64_t frame_timestamp_us,
+    MarkerObservation& out) {
+    if (!_have_track || !_last.valid || !gray) return false;
+
+    MarkerDetector::StrokeMatch match;
+    if (!_detector.locateFullStroke1D(
+            gray, global_threshold,
+            _id, _last.rotation,
+            _last.center_y_px, _last.side_px,
+            match)) {
+        return false;
+    }
+
+    const float dx = match.center_x_px - _last.center_x_px;
+    const float dy = match.center_y_px - _last.center_y_px;
+
+    out = _last;
+    out.valid = true;
+    out.corner_refined = false;
+    out.stroke_tracked = true;
+    out.one_d_tracked = false;
+    out.flow_tracked = false;
+    out.decoded_this_frame = false;
+    out.stroke_score = match.score;
+    out.stroke_hamming = match.hamming;
+    out.stroke_border_black = match.border_black;
+    out.track_mean_sad = 0.0f;
+    out.frame_timestamp_us = frame_timestamp_us;
+    out.state = TrackState::Track;
+    out.center_x_px = match.center_x_px;
+    out.center_y_px = match.center_y_px;
+
+    for (int i = 0; i < 4; ++i) {
+        out.corners[i].x = _last.corners[i].x + dx;
+        out.corners[i].y = _last.corners[i].y + dy;
+    }
+
+    if (out.constrained_z_m > 0.0f) {
+        out.constrained_x_m =
+            (out.center_x_px - appcfg::kCxPx) *
+            out.constrained_z_m / appcfg::kFxPx;
+        out.constrained_y_m =
+            (out.center_y_px - appcfg::kCyPx) *
+            out.constrained_z_m / appcfg::kFyPx;
+    }
+    out.tilt_reliable = false;
+
+    if (appcfg::kEnableRawHomographyPose) {
+        if (!_estimator.estimate(out.corners, out)) return false;
+    }
+    return true;
 }
 
 bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
@@ -366,9 +424,13 @@ bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
     out = _last;
     out.valid = true;
     out.corner_refined = false;
+    out.stroke_tracked = false;
     out.one_d_tracked = true;
     out.flow_tracked = false;
     out.decoded_this_frame = false;
+    out.stroke_score = 0.0f;
+    out.stroke_hamming = 99;
+    out.stroke_border_black = 0;
     out.track_mean_sad = mean_sad;
     out.frame_timestamp_us = frame_timestamp_us;
     out.state = TrackState::Track;
@@ -551,7 +613,8 @@ bool MarkerTracker::trackWithPyramid(const uint8_t* previous_gray,
 MarkerObservation MarkerTracker::process(const uint8_t* gray,
                                          const uint8_t* previous_gray,
                                          bool have_previous_frame,
-                                         uint64_t frame_timestamp_us) {
+                                         uint64_t frame_timestamp_us,
+                                         int global_threshold) {
     resetFrameDiagnostics();
 
     MarkerObservation obs;
@@ -560,6 +623,27 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     _last_roi = computeSearchRoi(frame_timestamp_us);
 
     const uint32_t t0 = micros();
+
+    // Primary path: search the whole physical stroke in the current frame.
+    // It does not depend on the previous-frame displacement, so a fast jump
+    // across the old +/-10/16 px windows can still be recovered immediately.
+    if (_have_track && _last.valid) {
+        if (trackWithFullStroke(
+                gray, global_threshold, frame_timestamp_us, obs)) {
+            ++_stroke_successes;
+            _misses = 0;
+            updateVelocity(obs);
+            _acquire_decode_cooldown =
+                appcfg::kRecoveryDecodeEveryNFrames - 1;
+            stampCounters(obs);
+            obs.vision_processing_us = micros() - t0;
+            _last = obs;
+            _previous_frame_valid = true;
+            return obs;
+        }
+        ++_stroke_failures;
+    }
+
     const bool can_flow =
         have_previous_frame && _previous_frame_valid &&
         _have_track && _last.valid && previous_gray;
@@ -570,6 +654,8 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
             ++_one_d_successes;
             _misses = 0;
             updateVelocity(obs);
+            _acquire_decode_cooldown =
+                appcfg::kRecoveryDecodeEveryNFrames - 1;
             stampCounters(obs);
             obs.vision_processing_us = micros() - t0;
             _last = obs;
@@ -583,6 +669,8 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
             ++_flow_successes;
             _misses = 0;
             updateVelocity(obs);
+            _acquire_decode_cooldown =
+                appcfg::kRecoveryDecodeEveryNFrames - 1;
             stampCounters(obs);
             obs.vision_processing_us = micros() - t0;
             _last = obs;
@@ -595,9 +683,12 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     const bool was_recovery =
         _have_track && (_misses > 0 || can_flow);
 
-    const bool full_acquire =
-        !_have_track || _misses >= appcfg::kMaxMissesBeforeLaneAcquire;
-    if (full_acquire && _acquire_decode_cooldown > 0) {
+    const int decode_period =
+        _have_track
+            ? appcfg::kRecoveryDecodeEveryNFrames
+            : appcfg::kAcquireDecodeEveryNFrames;
+
+    if (_acquire_decode_cooldown > 0) {
         --_acquire_decode_cooldown;
         ++_misses;
         _vx_px_s *= 0.75f;
@@ -607,16 +698,19 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
         obs.id = _id;
         obs.frame_timestamp_us = frame_timestamp_us;
         obs.valid = false;
-        obs.state = TrackState::Acquire;
+        obs.state = (_have_track &&
+                     _misses < appcfg::kMaxMissesBeforeLaneAcquire)
+                        ? TrackState::Recover
+                        : TrackState::Acquire;
         stampCounters(obs);
         obs.vision_processing_us = micros() - t0;
         _previous_frame_valid = false;
         return obs;
     }
-    _acquire_decode_cooldown =
-        full_acquire ? (appcfg::kAcquireDecodeEveryNFrames - 1) : 0;
+    _acquire_decode_cooldown = decode_period > 0 ? decode_period - 1 : 0;
 
-    bool aruco_found = _detector.detect(gray, _last_roi, _id, obs);
+    bool aruco_found = _detector.detect(
+        gray, _last_roi, _id, obs, global_threshold);
 
     // Root-cause diagnostic: if a marker that was previously tracked is not
     // found inside the normal local/lane ROI, retry the exact same image over
@@ -633,7 +727,8 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
         const RectI full_frame{
             0, 0, appcfg::kFrameWidth, appcfg::kFrameHeight
         };
-        aruco_found = _detector.detect(gray, full_frame, _id, obs);
+        aruco_found = _detector.detect(
+            gray, full_frame, _id, obs, global_threshold);
         _fullframe_aruco_us = micros() - full_t0;
         _fullframe_aruco_hit = aruco_found;
         _fullframe_reacquired = aruco_found;
@@ -680,7 +775,9 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     ++_decode_successes;
     if (was_recovery) ++_reacquires;
 
-    _acquire_decode_cooldown = 0;
+    _acquire_decode_cooldown =
+        appcfg::kRecoveryDecodeEveryNFrames - 1;
+    obs.stroke_tracked = false;
     obs.one_d_tracked = false;
     obs.decoded_this_frame = true;
     obs.flow_tracked = false;

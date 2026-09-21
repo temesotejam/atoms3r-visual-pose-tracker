@@ -13,12 +13,17 @@ public:
     MarkerObservation process(const uint8_t* gray,
                               const uint8_t* previous_gray,
                               bool have_previous_frame,
-                              uint64_t frame_timestamp_us);
+                              uint64_t frame_timestamp_us,
+                              int global_threshold);
     RectI currentSearchRoi() const { return _last_roi; }
 
 private:
     RectI computeSearchRoi(uint64_t frame_timestamp_us) const;
     RectI clampToFrame(const RectI& r) const;
+    bool trackWithFullStroke(const uint8_t* gray,
+                             int global_threshold,
+                             uint64_t frame_timestamp_us,
+                             MarkerObservation& out);
     bool trackWith1D(const uint8_t* previous_gray,
                      const uint8_t* gray,
                      uint64_t frame_timestamp_us,
@@ -44,6 +49,8 @@ private:
     float _vx_px_s = 0.0f;
     float _vy_px_s = 0.0f;
     int _acquire_decode_cooldown = 0;
+    uint32_t _stroke_successes = 0;
+    uint32_t _stroke_failures = 0;
     uint32_t _one_d_successes = 0;
     uint32_t _one_d_failures = 0;
     uint32_t _flow_successes = 0;

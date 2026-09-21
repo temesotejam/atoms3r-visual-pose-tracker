@@ -75,13 +75,19 @@ struct MarkerObservation {
     float perspective_asymmetry = 0.0f;
     bool tilt_reliable = false;
 
-    // Tracking diagnostics. ArUco is used for identity/reacquisition.
-    // one_d_tracked is the normal ultra-light horizontal-only path; the older
-    // two-level flow tracker remains as a safety fallback.
+    // Tracking diagnostics. After the first ArUco identity lock, the normal
+    // path is a current-frame full-stroke constrained search. The previous-
+    // frame 1-D and two-level trackers remain only as fallbacks.
+    bool stroke_tracked = false;
     bool one_d_tracked = false;
     bool flow_tracked = false;
     bool decoded_this_frame = false;
     float track_mean_sad = 0.0f;
+    float stroke_score = 0.0f;
+    int stroke_hamming = 99;
+    int stroke_border_black = 0;
+    uint32_t stroke_success_count = 0;
+    uint32_t stroke_fail_count = 0;
     uint32_t one_d_success_count = 0;
     uint32_t one_d_fail_count = 0;
     uint32_t flow_success_count = 0;
