@@ -71,20 +71,23 @@ static constexpr int kMaxMarkerSidePx = 180;
 static constexpr int kMinBlackComponentAreaPx = 90;
 static constexpr int kMaxHammingError = 1;
 
-// Primary tracker: the mechanism constrains each marker to a narrow Y band and
-// a horizontal stroke. After one ArUco ID lock, search the complete usable X
-// span directly in the CURRENT frame using the known 6x6 marker cell pattern.
-// Coarse X=2 px and only five possible Y centers keep this far cheaper than a
-// 2-D component/ArUco scan while removing the old +/-10 px motion limit.
-static constexpr int kStrokeCoarseStepPx = 2;
-static constexpr int kStrokeYSearchPx = 4;
-static constexpr int kStrokeYStepPx = 2;
-static constexpr int kStrokeMaxHamming = 4;
-static constexpr int kStrokeMinBlackBorderCells = 14;
-static constexpr float kStrokeMaxScore = 34.0f;
+// Normal tracking uses the previous-frame local 1-D matcher because hardware
+// logs show it is both the lightest and the most reliable path. When that local
+// window fails, recover with a WIDE search using a compact real-image template
+// captured from a validated ArUco/pyramid frame. The wide matcher scans X at a
+// coarse stride, refines only around the best candidate, and searches only a
+// few nearby Y offsets. Mean brightness is removed before SAD comparison so
+// exposure changes do not dominate the match.
+static constexpr int kWideTemplateRows = 5;
+static constexpr int kWideTemplateHalfWidthPx = 14;
+static constexpr int kWideTemplateSampleStepPx = 2;
+static constexpr int kWideTemplateCoarseStepPx = 4;
+static constexpr int kWideTemplateYSearchPx = 4;
+static constexpr int kWideTemplateYStepPx = 2;
+static constexpr float kWideTemplateMaxMeanSad = 28.0f;
+static constexpr int kWideTemplateMinContrast = 45;
 
-// Previous-frame 1-D matching remains only as a fallback behind the
-// current-frame full-stroke detector.
+// Previous-frame local 1-D tracking is the primary path.
 static constexpr int kOneDSearchPx = 10;
 static constexpr int kOneDPatchHalfWidthPx = 11;
 static constexpr int kOneDSampleStepPx = 2;
@@ -95,8 +98,8 @@ static constexpr float kOneDMaxMeanSad = 30.0f;
 // frame; only the cold/full acquisition state is duty-cycled.
 static constexpr int kAcquireDecodeEveryNFrames = 3;
 
-// Once a marker has been identified, the full-stroke detector gets several
-// cheap chances to recover before another expensive ArUco component scan.
+// Once a marker has been identified, local/wide-template/pyramid recovery gets
+// several chances before another expensive ArUco component scan.
 static constexpr int kRecoveryDecodeEveryNFrames = 4;
 
 // Diagnostic only: when a previously tracked marker is lost and the normal
