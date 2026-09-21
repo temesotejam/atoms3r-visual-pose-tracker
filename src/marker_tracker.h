@@ -70,6 +70,7 @@ private:
     uint8_t _wide_template[kWideTemplateSamples] = {};
     int _wide_template_mean = 0;
     int _wide_template_center_y = 0;
+    int _wide_template_row_step = 4;
     float _wide_template_side_px = 0.0f;
 
     float _wide_last_sad = 0.0f;
