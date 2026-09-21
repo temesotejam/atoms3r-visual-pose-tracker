@@ -50,8 +50,8 @@ const char* stateName(TrackState state) {
 }
 
 const char* sourceName(const MarkerObservation& m) {
-    if (m.stroke_tracked) return "stroke1d";
     if (m.one_d_tracked) return "1d";
+    if (m.wide_template_tracked) return "wide1d";
     if (m.flow_tracked) return "pyramid";
     if (m.fullframe_reacquired) return "aruco_fullframe";
     if (m.decoded_this_frame) return "aruco";
@@ -127,8 +127,8 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         "\"%s\":{\"valid\":%s,\"state\":\"%s\",\"source\":\"%s\","
         "\"id\":%d,\"rotation\":%d,\"hamming\":%d,\"quality\":%.3f,"
         "\"refined\":%s,\"track_sad\":%.2f,"
-        "\"stroke_score\":%.2f,\"stroke_hamming\":%d,\"stroke_border\":%d,"
-        "\"stroke_ok\":%u,\"stroke_fail\":%u,"
+        "\"wide_sad\":%.2f,\"wide_contrast\":%d,\"wide_x\":%d,\"wide_y\":%d,"
+        "\"wide_us\":%u,\"wide_ok\":%u,\"wide_fail\":%u,"
         "\"track1d_ok\":%u,\"track1d_fail\":%u,"
         "\"flow_ok\":%u,\"flow_fail\":%u,\"decode_ok\":%u,\"reacquire\":%u,"
         "\"track1d_diag\":{\"fail\":\"%s\",\"pred_x\":%d,\"best_x\":%d,"
@@ -152,8 +152,10 @@ void printMarkerJson(const char* name, const MarkerObservation& m) {
         m.id, m.rotation, m.hamming, m.quality,
         m.corner_refined ? "true" : "false",
         m.track_mean_sad,
-        m.stroke_score, m.stroke_hamming, m.stroke_border_black,
-        m.stroke_success_count, m.stroke_fail_count,
+        m.wide_template_sad, m.wide_template_contrast,
+        m.wide_template_x_px, m.wide_template_y_px,
+        m.wide_template_us,
+        m.wide_template_success_count, m.wide_template_fail_count,
         m.one_d_success_count, m.one_d_fail_count,
         m.flow_success_count, m.flow_fail_count,
         m.decode_success_count, m.reacquire_count,
@@ -182,7 +184,7 @@ void printTelemetry(const CameraFrame& frame,
                     const MarkerObservation& a,
                     const MarkerObservation& b,
                     uint32_t total_vision_us,
-                    int global_threshold) {
+                    int aruco_threshold) {
     ImuTelemetry imu;
     portENTER_CRITICAL(&g_imu_mux);
     imu = g_imu;
@@ -192,7 +194,7 @@ void printTelemetry(const CameraFrame& frame,
         "{\"t_us\":%llu,\"frame\":%u,\"frame_dt_us\":%u,"
         "\"camera_failures\":%u,"
         "\"camera\":{\"width\":%d,\"height\":%d,\"bytes\":%u},"
-        "\"global_threshold\":%d,"
+        "\"aruco_threshold\":%d,"
         "\"vision_total_us\":%u,\"vision_max_us\":%u,"
         "\"motion_axis\":\"horizontal\","
         "\"imu\":{\"enabled\":%s,\"loops\":%u,\"misses\":%u,"
@@ -201,7 +203,7 @@ void printTelemetry(const CameraFrame& frame,
         static_cast<unsigned long long>(esp_timer_get_time()),
         g_frame_count, g_frame_dt_us, g_camera_failures,
         frame.width, frame.height, static_cast<unsigned>(frame.length),
-        global_threshold,
+        aruco_threshold,
         total_vision_us, g_max_vision_us,
         imu.enabled ? "true" : "false",
         imu.loop_count, imu.deadline_misses, imu.max_step_us,
@@ -225,9 +227,9 @@ void setup() {
     Serial.println("Init order: camera I2C0 first, BMI270 I2C1 second");
     Serial.println("Motion model: horizontal; A upper band, B lower band");
     Serial.println(
-        "Tracking: full-stroke current-frame 1D first; local/pyramid fallbacks");
+        "Tracking: local 1D first; wide real-template recovery; pyramid fallback");
     Serial.println(
-        "ArUco: shared full-frame Otsu threshold; full-frame diagnostic OFF");
+        "ArUco: lazy shared full-frame Otsu only when decode is needed");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
@@ -310,18 +312,17 @@ void loop() {
 
     const uint32_t t0 = micros();
 
-    // Compute Otsu once over the real 320x240 frame. Both marker decoders use
-    // this exact threshold so changing recovery ROI can no longer change the
-    // binarization of the same camera image.
-    const int global_threshold =
-        g_detector.computeGlobalThreshold(frame.data);
+    // Keep Otsu completely off the normal fast path. The first tracker that
+    // actually needs ArUco computes it; the second tracker can reuse the same
+    // threshold for this frame through the shared cache.
+    int aruco_threshold = -1;
 
     MarkerObservation a = g_tracker_a.process(
         frame.data, g_previous_gray, g_have_previous_gray,
-        frame.timestamp_us, global_threshold);
+        frame.timestamp_us, aruco_threshold);
     MarkerObservation b = g_tracker_b.process(
         frame.data, g_previous_gray, g_have_previous_gray,
-        frame.timestamp_us, global_threshold);
+        frame.timestamp_us, aruco_threshold);
 
     const uint32_t vision_us = micros() - t0;
     if (vision_us > g_max_vision_us) g_max_vision_us = vision_us;
@@ -336,7 +337,7 @@ void loop() {
     const uint32_t now_ms = millis();
     if (now_ms - g_last_telemetry_ms >= appcfg::kTelemetryPeriodMs) {
         g_last_telemetry_ms = now_ms;
-        printTelemetry(frame, a, b, vision_us, global_threshold);
+        printTelemetry(frame, a, b, vision_us, aruco_threshold);
     }
 
     delay(1);
