@@ -15,11 +15,13 @@ switches to a predicted local ROI after lock.
 - native **grayscale/Y8** capture
 - two independent marker trackers
 - upper/lower horizontal acquisition bands
-- predicted local ROI after acquisition
-- ultra-light horizontal-only 1D tracking as the normal fast path
-- only three Y sample rows, X-only search, and no per-frame corner re-fit
-- two-level local block tracking retained as a safety fallback
-- ArUco fallback when both local trackers are not trustworthy
+- full-stroke current-frame constrained 1D detection as the normal fast path
+- coarse-to-fine X scan over the complete usable image width
+- only a ±4 px Y search using the already-known marker geometry
+- known ArUco 6x6 cell pattern scoring instead of connected components
+- previous-frame local 1D and two-level block tracking retained as safety fallbacks
+- ArUco fallback only when the constrained paths are not trustworthy
+- one shared full-frame Otsu threshold per camera frame for both A/B decoders
 - lane-wide acquisition duty-cycled while fully lost to leave CPU headroom
 - expanding recovery ROI after misses
 - fallback to band acquisition instead of immediate full-frame search
@@ -106,17 +108,24 @@ The current acquisition geometry is approximately:
 +--------------------------------------+
 ```
 
-After a marker is found, the normal path uses the mechanism constraint directly:
-the marker is assumed to translate only in X over a short range while Y, scale,
-and image rotation stay effectively fixed. Three rows through the known marker
-are sampled and matched only along X around the velocity prediction. A successful
-1D match translates the already-validated marker geometry without re-fitting four
-corners or solving a homography.
+After the first ArUco ID lock, the normal path no longer assumes the next
+position must be close to the previous frame. The current image is searched
+across the complete usable X span. For each X candidate the firmware samples
+the known 6x6 ArUco cell locations using the already-known marker rotation,
+approximate Y center, and side length. X is searched at 2 px resolution first
+and only the best neighborhood is refined at 1 px resolution. Y is limited to
+a small ±4 px range.
 
-If that 1D match is not trustworthy, the previous two-level X/Y block tracker is
-used as a safety fallback, and only then is ArUco decoding attempted. Once fully
-lost, expensive lane-wide ArUco acquisition is duty-cycled rather than run on
-every camera frame.
+This removes the old ±10 px primary-tracker displacement limit while avoiding a
+general 2-D component search. No four-corner re-fit or homography solve is
+needed on a successful full-stroke frame.
+
+If the full-stroke match is not trustworthy, the previous-frame local 1-D
+matcher and then the two-level X/Y tracker remain as safety fallbacks. ArUco
+decoding is duty-cycled after a known marker is lost. All ArUco scans in the
+same frame use the same threshold computed once from the complete 320×240
+grayscale frame, avoiding the ROI-dependent Otsu behavior found in hardware
+logs.
 
 ## Serial output
 
@@ -132,8 +141,10 @@ Every ~100 ms the firmware emits one JSON object containing:
 - IMU deadline misses
 - max IMU step execution time
 - acceleration / gyro
-- marker validity/state and tracking source (`1d` / `pyramid` / `aruco` / `none`)
-- local tracking SAD and cumulative 1D/flow/decode/reacquire counters
+- marker validity/state and tracking source (`stroke1d` / `1d` / `pyramid` / `aruco` / `none`)
+- global Otsu threshold used by both marker decoders
+- full-stroke score/Hamming/border metrics and cumulative counters
+- fallback local tracking SAD and cumulative 1D/flow/decode/reacquire counters
 - pixel position and image-plane angle
 - constrained XYZ estimate
 - perspective asymmetry / tilt reliability
@@ -168,8 +179,8 @@ Core 0 / high priority
 Core 1 / non-deadline vision
     GC0308 frame
       -> Marker A / Marker B
-      -> constrained 1D X tracking in normal operation
-      -> two-level local motion tracking only as fallback
+      -> current-frame full-stroke constrained 1D detection
+      -> previous-frame local 1D / two-level motion fallbacks
       -> ArUco acquire/reacquire only when needed
       -> constrained horizontal position measurement
       -> optional raw pose diagnostics
@@ -185,8 +196,8 @@ reduce visual update rate, not stall control.
 2. Flash from the Pages installer.
 3. Open serial at 921600 baud.
 4. Keep both markers still and confirm `valid=true`; the initial lock should report `source:"aruco"`.
-5. Move each marker horizontally and confirm successful following frames normally report `source:"1d"`.
-6. Watch `track_sad`, `track1d_fail`, `flow_fail`, and `reacquire` while increasing motion speed.
+5. Move each marker horizontally and confirm successful following frames normally report `source:"stroke1d"`.
+6. Watch `stroke_score`, `stroke_hamming`, `stroke_border`, and `stroke_fail` while increasing motion speed.
 7. Confirm `cx_px` follows the motion while `cy_px` remains comparatively constant.
 8. Cover one marker and confirm recovery returns through ArUco acquisition.
 9. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.
