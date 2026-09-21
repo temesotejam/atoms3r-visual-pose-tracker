@@ -75,19 +75,21 @@ struct MarkerObservation {
     float perspective_asymmetry = 0.0f;
     bool tilt_reliable = false;
 
-    // Tracking diagnostics. After the first ArUco identity lock, the normal
-    // path is a current-frame full-stroke constrained search. The previous-
-    // frame 1-D and two-level trackers remain only as fallbacks.
-    bool stroke_tracked = false;
+    // Tracking diagnostics. The normal path is the ultra-light previous-frame
+    // local 1-D matcher. If it fails, a compact real-image template is searched
+    // over the full horizontal stroke before the two-level fallback / ArUco.
+    bool wide_template_tracked = false;
     bool one_d_tracked = false;
     bool flow_tracked = false;
     bool decoded_this_frame = false;
     float track_mean_sad = 0.0f;
-    float stroke_score = 0.0f;
-    int stroke_hamming = 99;
-    int stroke_border_black = 0;
-    uint32_t stroke_success_count = 0;
-    uint32_t stroke_fail_count = 0;
+    float wide_template_sad = 0.0f;
+    int wide_template_contrast = 0;
+    int wide_template_x_px = 0;
+    int wide_template_y_px = 0;
+    uint32_t wide_template_us = 0;
+    uint32_t wide_template_success_count = 0;
+    uint32_t wide_template_fail_count = 0;
     uint32_t one_d_success_count = 0;
     uint32_t one_d_fail_count = 0;
     uint32_t flow_success_count = 0;
