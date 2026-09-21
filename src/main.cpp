@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <M5Unified.h>
+#include <math.h>
 #include "esp_timer.h"
 
 #include "app_config.h"
@@ -24,6 +25,12 @@ uint32_t g_max_vision_us = 0;
 uint32_t g_frame_dt_us = 0;
 uint64_t g_last_frame_timestamp_us = 0;
 
+float wrapAngleDeg(float deg) {
+    while (deg > 180.0f) deg -= 360.0f;
+    while (deg < -180.0f) deg += 360.0f;
+    return deg;
+}
+
 void controlStep(const ImuTelemetry&) {
     // Reserved for the future controller. Vision must never block this task.
 }
@@ -36,6 +43,10 @@ void imuControlTask(void*) {
     uint32_t max_step_us = 0;
     uint32_t deadline_misses = 0;
     uint32_t loop_count = 0;
+
+    bool tilt_initialized = false;
+    float tilt_cf_deg = 0.0f;
+    uint64_t last_tilt_timestamp_us = 0;
 
     for (;;) {
         const uint32_t t0 = micros();
@@ -54,6 +65,54 @@ void imuControlTask(void*) {
             sample.gx = data.gyro.x;
             sample.gy = data.gyro.y;
             sample.gz = data.gyro.z;
+
+            sample.accel_norm_g = sqrtf(
+                sample.ax * sample.ax +
+                sample.ay * sample.ay +
+                sample.az * sample.az);
+            sample.gyro_norm_dps = sqrtf(
+                sample.gx * sample.gx +
+                sample.gy * sample.gy +
+                sample.gz * sample.gz);
+
+            // Current mount: upright is approximately ax=-1 g, az=0 g and
+            // the body rotates mainly about IMU Y.
+            sample.body_tilt_acc_deg =
+                atan2f(-sample.az, -sample.ax) *
+                57.2957795131f;
+
+            if (!tilt_initialized) {
+                tilt_cf_deg = sample.body_tilt_acc_deg;
+                tilt_initialized = true;
+            } else if (sample.sample_timestamp_us >
+                       last_tilt_timestamp_us) {
+                float dt =
+                    static_cast<float>(
+                        sample.sample_timestamp_us -
+                        last_tilt_timestamp_us) * 1e-6f;
+                if (dt > 0.0f && dt < 0.05f) {
+                    const float predicted =
+                        tilt_cf_deg + sample.gy * dt;
+                    const float error =
+                        wrapAngleDeg(
+                            sample.body_tilt_acc_deg - predicted);
+                    const float beta =
+                        dt /
+                        (appcfg::kBodyTiltComplementaryTauS + dt);
+                    tilt_cf_deg =
+                        wrapAngleDeg(predicted + beta * error);
+                } else {
+                    tilt_cf_deg = sample.body_tilt_acc_deg;
+                }
+            }
+
+            last_tilt_timestamp_us = sample.sample_timestamp_us;
+            sample.body_tilt_cf_deg = tilt_cf_deg;
+            sample.tilt_static =
+                sample.gyro_norm_dps <=
+                    appcfg::kTiltStaticMaxGyroDps &&
+                fabsf(sample.accel_norm_g - 1.0f) <=
+                    appcfg::kTiltStaticAccelNormToleranceG;
         }
 
         const uint32_t step_us = micros() - t0;
@@ -110,17 +169,22 @@ void printTelemetry(const CameraFrame& frame,
     portEXIT_CRITICAL(&g_imu_mux);
 
     Serial.printf(
-        "{\"t_us\":%llu,\"frame\":%u,\"frame_dt_us\":%u,"
-        "\"camera_failures\":%u,"
+        "{\"t_us\":%llu,\"frame\":%u,\"frame_t_us\":%llu,"
+        "\"frame_dt_us\":%u,\"camera_failures\":%u,"
         "\"camera\":{\"width\":%d,\"height\":%d,\"bytes\":%u},"
         "\"vision_mode\":\"white_sparse_1d\","
         "\"vision_total_us\":%u,\"vision_max_us\":%u,"
         "\"motion_axis\":\"horizontal\","
-        "\"imu\":{\"enabled\":%s,\"loops\":%u,\"misses\":%u,"
-        "\"max_step_us\":%u,\"ax\":%.5f,\"ay\":%.5f,\"az\":%.5f,"
-        "\"gx\":%.5f,\"gy\":%.5f,\"gz\":%.5f},",
+        "\"imu\":{\"enabled\":%s,\"sample_t_us\":%llu,"
+        "\"loops\":%u,\"misses\":%u,\"max_step_us\":%u,"
+        "\"ax\":%.5f,\"ay\":%.5f,\"az\":%.5f,"
+        "\"gx\":%.5f,\"gy\":%.5f,\"gz\":%.5f,"
+        "\"accel_norm_g\":%.5f,\"gyro_norm_dps\":%.5f,"
+        "\"body_tilt_acc_deg\":%.3f,\"body_tilt_cf_deg\":%.3f,"
+        "\"tilt_static\":%s},",
         static_cast<unsigned long long>(esp_timer_get_time()),
         g_frame_count,
+        static_cast<unsigned long long>(frame.timestamp_us),
         g_frame_dt_us,
         g_camera_failures,
         frame.width,
@@ -129,11 +193,17 @@ void printTelemetry(const CameraFrame& frame,
         total_vision_us,
         g_max_vision_us,
         imu.enabled ? "true" : "false",
+        static_cast<unsigned long long>(imu.sample_timestamp_us),
         imu.loop_count,
         imu.deadline_misses,
         imu.max_step_us,
         imu.ax, imu.ay, imu.az,
-        imu.gx, imu.gy, imu.gz);
+        imu.gx, imu.gy, imu.gz,
+        imu.accel_norm_g,
+        imu.gyro_norm_dps,
+        imu.body_tilt_acc_deg,
+        imu.body_tilt_cf_deg,
+        imu.tilt_static ? "true" : "false");
 
     printMarkerJson("marker_a", a);
     Serial.print(",");
@@ -155,6 +225,8 @@ void setup() {
         "Tracking: current-frame sparse-line white centroid only");
     Serial.println(
         "ArUco/template/pyramid/previous-frame buffer: not used");
+    Serial.println(
+        "Calibration log: body tilt about IMU Y + static-sample flag");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
