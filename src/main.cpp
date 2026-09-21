@@ -1,31 +1,17 @@
 #include <Arduino.h>
 #include <M5Unified.h>
-#include <string.h>
-#include "esp_heap_caps.h"
 #include "esp_timer.h"
 
 #include "app_config.h"
 #include "camera_driver.h"
-#include "marker_detector.h"
-#include "marker_tracker.h"
-#include "pose_estimator.h"
 #include "vision_types.h"
+#include "white_marker_tracker.h"
 
 namespace {
 
 CameraDriver g_camera;
-MarkerDetector g_detector(appcfg::kFrameWidth, appcfg::kFrameHeight);
-PoseEstimator g_pose(appcfg::kFxPx, appcfg::kFyPx,
-                     appcfg::kCxPx, appcfg::kCyPx,
-                     appcfg::kMarkerSideM);
-
-RectI g_lane_a{appcfg::kLaneAX, appcfg::kLaneAY,
-               appcfg::kLaneAW, appcfg::kLaneAH};
-RectI g_lane_b{appcfg::kLaneBX, appcfg::kLaneBY,
-               appcfg::kLaneBW, appcfg::kLaneBH};
-
-MarkerTracker g_tracker_a(appcfg::kMarkerAId, g_lane_a, g_detector, g_pose);
-MarkerTracker g_tracker_b(appcfg::kMarkerBId, g_lane_b, g_detector, g_pose);
+WhiteMarker1DTracker g_tracker_a(appcfg::kMarkerAId);
+WhiteMarker1DTracker g_tracker_b(appcfg::kMarkerBId);
 
 portMUX_TYPE g_imu_mux = portMUX_INITIALIZER_UNLOCKED;
 ImuTelemetry g_imu;
@@ -37,40 +23,6 @@ uint32_t g_camera_failures = 0;
 uint32_t g_max_vision_us = 0;
 uint32_t g_frame_dt_us = 0;
 uint64_t g_last_frame_timestamp_us = 0;
-
-uint8_t* g_previous_gray = nullptr;
-bool g_have_previous_gray = false;
-
-const char* stateName(TrackState state) {
-    switch (state) {
-        case TrackState::Track: return "track";
-        case TrackState::Recover: return "recover";
-        default: return "acquire";
-    }
-}
-
-const char* sourceName(const MarkerObservation& m) {
-    if (m.one_d_tracked) return "1d";
-    if (m.wide_template_tracked) return "wide1d";
-    if (m.flow_tracked) return "pyramid";
-    if (m.fullframe_reacquired) return "aruco_fullframe";
-    if (m.decoded_this_frame) return "aruco";
-    return "none";
-}
-
-const char* failReasonName(TrackFailReason reason) {
-    switch (reason) {
-        case TrackFailReason::Preconditions: return "preconditions";
-        case TrackFailReason::Timing: return "timing";
-        case TrackFailReason::Bounds: return "bounds";
-        case TrackFailReason::SearchBoundary: return "search_boundary";
-        case TrackFailReason::Sad: return "sad";
-        case TrackFailReason::Refine: return "refine";
-        case TrackFailReason::Pose: return "pose";
-        case TrackFailReason::Geometry: return "geometry";
-        default: return "none";
-    }
-}
 
 void controlStep(const ImuTelemetry&) {
     // Reserved for the future controller. Vision must never block this task.
@@ -122,69 +74,36 @@ void imuControlTask(void*) {
     }
 }
 
-void printMarkerJson(const char* name, const MarkerObservation& m) {
+void printMarkerJson(const char* name,
+                     const WhiteMarkerObservation& m) {
     Serial.printf(
-        "\"%s\":{\"valid\":%s,\"state\":\"%s\",\"source\":\"%s\","
-        "\"id\":%d,\"rotation\":%d,\"hamming\":%d,\"quality\":%.3f,"
-        "\"refined\":%s,\"track_sad\":%.2f,"
-        "\"wide_sad\":%.2f,\"wide_contrast\":%d,\"wide_x\":%d,\"wide_y\":%d,"
-        "\"wide_us\":%u,\"wide_ok\":%u,\"wide_fail\":%u,"
-        "\"track1d_ok\":%u,\"track1d_fail\":%u,"
-        "\"flow_ok\":%u,\"flow_fail\":%u,\"decode_ok\":%u,\"reacquire\":%u,"
-        "\"track1d_diag\":{\"fail\":\"%s\",\"pred_x\":%d,\"best_x\":%d,"
-        "\"best_dx\":%d,\"best_sad\":%.2f},"
-        "\"pyramid_diag\":{\"fail\":\"%s\",\"pred_x\":%d,\"pred_y\":%d,"
-        "\"best_x\":%d,\"best_y\":%d},"
-        "\"aruco_diag\":{\"roi\":[%d,%d,%d,%d],\"full_attempt\":%s,"
-        "\"full_hit\":%s,\"full_us\":%u},"
-        "\"cx_px\":%.2f,\"cy_px\":%.2f,\"side_px\":%.2f,"
-        "\"image_angle_deg\":%.2f,"
-        "\"constrained_x_m\":%.5f,\"constrained_y_m\":%.5f,"
-        "\"constrained_z_m\":%.5f,"
-        "\"perspective_asymmetry\":%.4f,\"tilt_reliable\":%s,"
-        "\"x_m\":%.5f,\"y_m\":%.5f,\"z_m\":%.5f,"
-        "\"roll_deg\":%.2f,\"pitch_deg\":%.2f,\"yaw_deg\":%.2f,"
+        "\"%s\":{\"valid\":%s,\"state\":\"%s\","
+        "\"source\":\"%s\",\"id\":%d,"
+        "\"cx_px\":%.3f,\"cy_px\":%.1f,"
+        "\"peak_x_px\":%d,\"peak_contrast\":%.2f,"
+        "\"weight_sum\":%.2f,\"bright_width_px\":%d,"
+        "\"detect_ok\":%u,\"detect_fail\":%u,"
         "\"vision_us\":%u}",
         name,
         m.valid ? "true" : "false",
-        stateName(m.state),
-        sourceName(m),
-        m.id, m.rotation, m.hamming, m.quality,
-        m.corner_refined ? "true" : "false",
-        m.track_mean_sad,
-        m.wide_template_sad, m.wide_template_contrast,
-        m.wide_template_x_px, m.wide_template_y_px,
-        m.wide_template_us,
-        m.wide_template_success_count, m.wide_template_fail_count,
-        m.one_d_success_count, m.one_d_fail_count,
-        m.flow_success_count, m.flow_fail_count,
-        m.decode_success_count, m.reacquire_count,
-        failReasonName(m.one_d_fail_reason),
-        m.one_d_pred_x_px, m.one_d_best_x_px,
-        m.one_d_best_offset_px, m.one_d_best_mean_sad,
-        failReasonName(m.pyramid_fail_reason),
-        m.pyramid_pred_x_px, m.pyramid_pred_y_px,
-        m.pyramid_best_x_px, m.pyramid_best_y_px,
-        m.aruco_local_roi.x, m.aruco_local_roi.y,
-        m.aruco_local_roi.w, m.aruco_local_roi.h,
-        m.fullframe_aruco_attempted ? "true" : "false",
-        m.fullframe_aruco_hit ? "true" : "false",
-        m.fullframe_aruco_us,
-        m.center_x_px, m.center_y_px, m.side_px,
-        m.image_angle_deg,
-        m.constrained_x_m, m.constrained_y_m, m.constrained_z_m,
-        m.perspective_asymmetry,
-        m.tilt_reliable ? "true" : "false",
-        m.x_m, m.y_m, m.z_m,
-        m.roll_deg, m.pitch_deg, m.yaw_deg,
-        m.vision_processing_us);
+        m.valid ? "track" : "acquire",
+        m.valid ? "white1d" : "none",
+        m.id,
+        m.center_x_px,
+        m.center_y_px,
+        m.peak_x_px,
+        m.peak_contrast,
+        m.weight_sum,
+        m.bright_width_px,
+        m.success_count,
+        m.fail_count,
+        m.processing_us);
 }
 
 void printTelemetry(const CameraFrame& frame,
-                    const MarkerObservation& a,
-                    const MarkerObservation& b,
-                    uint32_t total_vision_us,
-                    int aruco_threshold) {
+                    const WhiteMarkerObservation& a,
+                    const WhiteMarkerObservation& b,
+                    uint32_t total_vision_us) {
     ImuTelemetry imu;
     portENTER_CRITICAL(&g_imu_mux);
     imu = g_imu;
@@ -194,19 +113,25 @@ void printTelemetry(const CameraFrame& frame,
         "{\"t_us\":%llu,\"frame\":%u,\"frame_dt_us\":%u,"
         "\"camera_failures\":%u,"
         "\"camera\":{\"width\":%d,\"height\":%d,\"bytes\":%u},"
-        "\"aruco_threshold\":%d,"
+        "\"vision_mode\":\"white_sparse_1d\","
         "\"vision_total_us\":%u,\"vision_max_us\":%u,"
         "\"motion_axis\":\"horizontal\","
         "\"imu\":{\"enabled\":%s,\"loops\":%u,\"misses\":%u,"
         "\"max_step_us\":%u,\"ax\":%.5f,\"ay\":%.5f,\"az\":%.5f,"
         "\"gx\":%.5f,\"gy\":%.5f,\"gz\":%.5f},",
         static_cast<unsigned long long>(esp_timer_get_time()),
-        g_frame_count, g_frame_dt_us, g_camera_failures,
-        frame.width, frame.height, static_cast<unsigned>(frame.length),
-        aruco_threshold,
-        total_vision_us, g_max_vision_us,
+        g_frame_count,
+        g_frame_dt_us,
+        g_camera_failures,
+        frame.width,
+        frame.height,
+        static_cast<unsigned>(frame.length),
+        total_vision_us,
+        g_max_vision_us,
         imu.enabled ? "true" : "false",
-        imu.loop_count, imu.deadline_misses, imu.max_step_us,
+        imu.loop_count,
+        imu.deadline_misses,
+        imu.max_step_us,
         imu.ax, imu.ay, imu.az,
         imu.gx, imu.gy, imu.gz);
 
@@ -223,33 +148,16 @@ void setup() {
     delay(300);
 
     Serial.println();
-    Serial.println("AtomS3R Visual Pose Tracker boot");
+    Serial.println("AtomS3R White Marker 1D Tracker boot");
     Serial.println("Init order: camera I2C0 first, BMI270 I2C1 second");
-    Serial.println("Motion model: horizontal; A upper band, B lower band");
+    Serial.println("Motion model: horizontal; upper white marker=A, lower=B");
     Serial.println(
-        "Tracking: local 1D first; wide real-template recovery; pyramid fallback");
+        "Tracking: current-frame sparse-line white centroid only");
     Serial.println(
-        "ArUco: lazy shared full-frame Otsu only when decode is needed");
+        "ArUco/template/pyramid/previous-frame buffer: not used");
 
     if (!psramFound()) {
         Serial.println("FATAL: PSRAM not detected");
-        while (true) delay(1000);
-    }
-
-    const size_t frame_bytes =
-        static_cast<size_t>(appcfg::kFrameWidth) * appcfg::kFrameHeight;
-    g_previous_gray = static_cast<uint8_t*>(
-        heap_caps_malloc(frame_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!g_previous_gray) {
-        g_previous_gray = static_cast<uint8_t*>(malloc(frame_bytes));
-    }
-    if (!g_previous_gray) {
-        Serial.println("FATAL: previous-frame buffer allocation failed");
-        while (true) delay(1000);
-    }
-
-    if (!g_detector.begin()) {
-        Serial.println("FATAL: detector scratch allocation failed");
         while (true) delay(1000);
     }
 
@@ -286,10 +194,8 @@ void setup() {
     }
 
     Serial.printf(
-        "READY: QVGA grayscale, marker A=%d, marker B=%d, "
-        "marker side=%.1f mm, serial=921600\n",
-        appcfg::kMarkerAId, appcfg::kMarkerBId,
-        appcfg::kMarkerSideM * 1000.0f);
+        "READY: QVGA grayscale, white marker A upper / B lower, "
+        "serial=921600\n");
 }
 
 void loop() {
@@ -306,38 +212,27 @@ void loop() {
         const uint64_t dt =
             frame.timestamp_us - g_last_frame_timestamp_us;
         g_frame_dt_us =
-            dt > 0xffffffffULL ? 0xffffffffU : static_cast<uint32_t>(dt);
+            dt > 0xffffffffULL ? 0xffffffffU
+                               : static_cast<uint32_t>(dt);
     }
     g_last_frame_timestamp_us = frame.timestamp_us;
 
     const uint32_t t0 = micros();
 
-    // Keep Otsu completely off the normal fast path. The first tracker that
-    // actually needs ArUco computes it; the second tracker can reuse the same
-    // threshold for this frame through the shared cache.
-    int aruco_threshold = -1;
-
-    MarkerObservation a = g_tracker_a.process(
-        frame.data, g_previous_gray, g_have_previous_gray,
-        frame.timestamp_us, aruco_threshold);
-    MarkerObservation b = g_tracker_b.process(
-        frame.data, g_previous_gray, g_have_previous_gray,
-        frame.timestamp_us, aruco_threshold);
+    const WhiteMarkerObservation a =
+        g_tracker_a.process(frame.data);
+    const WhiteMarkerObservation b =
+        g_tracker_b.process(frame.data);
 
     const uint32_t vision_us = micros() - t0;
     if (vision_us > g_max_vision_us) g_max_vision_us = vision_us;
-
-    const size_t frame_bytes =
-        static_cast<size_t>(appcfg::kFrameWidth) * appcfg::kFrameHeight;
-    memcpy(g_previous_gray, frame.data, frame_bytes);
-    g_have_previous_gray = true;
 
     g_camera.release();
 
     const uint32_t now_ms = millis();
     if (now_ms - g_last_telemetry_ms >= appcfg::kTelemetryPeriodMs) {
         g_last_telemetry_ms = now_ms;
-        printTelemetry(frame, a, b, vision_us, aruco_threshold);
+        printTelemetry(frame, a, b, vision_us);
     }
 
     delay(1);
