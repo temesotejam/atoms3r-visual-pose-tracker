@@ -162,6 +162,14 @@ static constexpr int kCornerRefineSearchRadiusPx = 5;
 static constexpr float kCornerRefineMinContrast = 10.0f;
 static constexpr float kCornerRefineMaxShiftFraction = 0.22f;
 
+// Body-tilt calibration helper. The present hardware rotates mainly about the
+// BMI270 Y axis. Accelerometer tilt is defined so the observed upright pose
+// (ax ~= -1 g, az ~= 0 g) is near 0 deg. A light complementary filter makes
+// slow calibration motion easier to inspect while retaining raw accel tilt.
+static constexpr float kBodyTiltComplementaryTauS = 0.50f;
+static constexpr float kTiltStaticMaxGyroDps = 3.0f;
+static constexpr float kTiltStaticAccelNormToleranceG = 0.05f;
+
 // High-rate side of the application. The vision task is deliberately not
 // allowed to dictate this period.
 static constexpr uint32_t kImuControlPeriodUs = 5000; // 200 Hz
