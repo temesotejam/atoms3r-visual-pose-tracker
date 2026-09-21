@@ -86,6 +86,13 @@ Every ~100 ms the firmware emits one JSON object containing:
 - total and max vision processing time
 - 200 Hz IMU loop count / deadline misses / max step time
 - IMU acceleration / gyro
+- synchronized frame / IMU timestamps
+- body tilt diagnostics about the current IMU Y axis:
+  - body_tilt_acc_deg
+  - body_tilt_cf_deg
+  - accel_norm_g
+  - gyro_norm_dps
+  - tilt_static
 - marker A / B:
   - valid
   - source: "white1d" or "none"
@@ -99,6 +106,71 @@ Every ~100 ms the firmware emits one JSON object containing:
   - per-marker vision_us
 
 For the current mechanism, **cx_px is the primary visual measurement**.
+
+## Foot-angle calibration experiment
+
+The next experiment uses the white-marker X position as a sensor for the
+**foot/leg angle relative to the body**.
+
+The camera and BMI270 are rigidly attached to the body. The white marker is
+rigidly attached to the foot/leg link. Because the mechanism has no knee or
+ankle joint, a controlled body rotation with the foot/leg fixed to the world
+gives a direct calibration pair:
+
+    white marker cx_px  <->  body-to-foot relative angle
+
+The current mount rotates mainly about the IMU Y axis. The firmware therefore
+logs two body-tilt estimates:
+
+    body_tilt_acc_deg
+        atan2-based gravity angle; best for quasi-static calibration points
+
+    body_tilt_cf_deg
+        Y-gyro + accelerometer complementary-filter angle
+
+The sign/zero are not yet treated as a final joint-angle convention. They are
+calibration diagnostics. The final foot-angle zero and sign should be defined
+from the controlled experiment.
+
+Recommended procedure:
+
+1. Fix the target foot/leg link so its world angle cannot change.
+2. Put the body at the desired zero/reference posture and hold still.
+3. Move the body slowly through the useful angular range.
+4. Pause briefly at several angles.
+5. Return through the same range.
+6. Repeat 3-5 times.
+7. If both feet can be held fixed simultaneously, A and B may be calibrated in
+   the same run. Otherwise calibrate one side at a time.
+8. Save the complete serial log.
+
+For fitting, prefer samples where:
+
+    tilt_static == true
+
+This flag currently requires:
+
+    total gyro rate <= 3 deg/s
+    |accelerometer norm - 1 g| <= 0.05 g
+
+These samples minimize dynamic-acceleration error in the accelerometer gravity
+angle.
+
+The telemetry also includes:
+
+    frame_t_us
+    imu.sample_t_us
+
+so image and IMU timing can be audited explicitly.
+
+After the measurement, fit separate mappings:
+
+    theta_A = f_A(cx_A)
+    theta_B = f_B(cx_B)
+
+A lookup table with interpolation is the preferred first implementation. A
+low-order polynomial can be compared later if the measured relation is smooth
+and repeatable.
 
 ## Configuration
 
@@ -156,7 +228,9 @@ No previous camera frame is copied or retained by the tracker.
 8. Watch detect_fail; ideally it remains zero.
 9. Check vision_total_us and the individual marker vision_us.
 10. Confirm imu.misses remains zero while moving at the fastest expected speed.
-11. Copy the full log from the Pages serial monitor for analysis.
+11. For the angle-calibration run, hold the foot/leg world angle fixed and move
+    the body slowly; include several pauses so tilt_static becomes true.
+12. Copy the full log from the Pages serial monitor for analysis.
 
 ## Legacy implementation
 
