@@ -71,11 +71,20 @@ static constexpr int kMaxMarkerSidePx = 180;
 static constexpr int kMinBlackComponentAreaPx = 90;
 static constexpr int kMaxHammingError = 1;
 
-// The mechanism is much more constrained than a general image tracker: each
-// marker stays on its own nearly-fixed horizontal line and only translates a
-// short distance in X. Try an ultra-light 1-D strip match first. It samples
-// only three rows and every other X pixel, then shifts the already-known marker
-// geometry without re-fitting four corners or solving pose.
+// Primary tracker: the mechanism constrains each marker to a narrow Y band and
+// a horizontal stroke. After one ArUco ID lock, search the complete usable X
+// span directly in the CURRENT frame using the known 6x6 marker cell pattern.
+// Coarse X=2 px and only five possible Y centers keep this far cheaper than a
+// 2-D component/ArUco scan while removing the old +/-10 px motion limit.
+static constexpr int kStrokeCoarseStepPx = 2;
+static constexpr int kStrokeYSearchPx = 4;
+static constexpr int kStrokeYStepPx = 2;
+static constexpr int kStrokeMaxHamming = 4;
+static constexpr int kStrokeMinBlackBorderCells = 14;
+static constexpr float kStrokeMaxScore = 34.0f;
+
+// Previous-frame 1-D matching remains only as a fallback behind the
+// current-frame full-stroke detector.
 static constexpr int kOneDSearchPx = 10;
 static constexpr int kOneDPatchHalfWidthPx = 11;
 static constexpr int kOneDSampleStepPx = 2;
@@ -86,11 +95,15 @@ static constexpr float kOneDMaxMeanSad = 30.0f;
 // frame; only the cold/full acquisition state is duty-cycled.
 static constexpr int kAcquireDecodeEveryNFrames = 3;
 
+// Once a marker has been identified, the full-stroke detector gets several
+// cheap chances to recover before another expensive ArUco component scan.
+static constexpr int kRecoveryDecodeEveryNFrames = 4;
+
 // Diagnostic only: when a previously tracked marker is lost and the normal
 // local ArUco ROI misses, retry the same frame over the full 320x240 image.
 // If this succeeds, the loss was caused by local search/ROI rather than the
 // camera image being undecodable. Disable after the root cause is identified.
-static constexpr bool kEnableFullFrameLossDiagnostic = true;
+static constexpr bool kEnableFullFrameLossDiagnostic = false;
 
 // Two-level local block tracking remains as a safety fallback behind the 1-D
 // tracker. It is more general (X/Y motion + corner re-fit) but substantially
