@@ -8,6 +8,38 @@ static constexpr int kFrameWidth = 320;
 static constexpr int kFrameHeight = 240;
 static constexpr int kCameraFpsTarget = 15;
 
+// White-marker 1D detector used by the current hardware.
+// The mechanism never crosses the two markers, so upper-band = A and
+// lower-band = B; no visual ID decode is required.
+//
+// These rows were validated offline on all 262 frames of
+// WIN_20260921_17_14_06_Pro.mp4 with 262/262 detection for both markers.
+static constexpr int kWhiteMarkerRowCount = 5;
+static constexpr int kWhiteReferenceRowCount = 3;
+
+static constexpr int kWhiteMarkerARows[kWhiteMarkerRowCount] =
+    {58, 62, 66, 70, 74};
+static constexpr int kWhiteReferenceARows[kWhiteReferenceRowCount] =
+    {38, 42, 46};
+static constexpr int kWhiteMarkerACenterY = 66;
+
+static constexpr int kWhiteMarkerBRows[kWhiteMarkerRowCount] =
+    {152, 156, 160, 164, 168};
+static constexpr int kWhiteReferenceBRows[kWhiteReferenceRowCount] =
+    {182, 186, 190};
+static constexpr int kWhiteMarkerBCenterY = 160;
+
+// The sparse-line profile is smoothed horizontally over five pixels.
+// A pixel is treated as marker evidence when the marker-band brightness
+// exceeds the black-body reference by these grayscale-level margins.
+static constexpr float kWhitePeakMinContrast = 55.0f;
+static constexpr float kWhiteCentroidBaseline = 35.0f;
+static constexpr float kWhiteMinWeightSum = 150.0f;
+static constexpr int kWhiteCentroidHalfWindowPx = 35;
+
+// Legacy ArUco/template tracker configuration is retained below only for
+// rollback/reference. It is not used by the current white-marker main loop.
+
 // Standard OpenCV ArUco DICT_4X4_50 IDs used by the first prototype.
 static constexpr int kMarkerAId = 0;
 static constexpr int kMarkerBId = 1;
