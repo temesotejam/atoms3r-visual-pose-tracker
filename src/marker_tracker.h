@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app_config.h"
 #include "vision_types.h"
 
 class MarkerDetector;
@@ -14,16 +15,17 @@ public:
                               const uint8_t* previous_gray,
                               bool have_previous_frame,
                               uint64_t frame_timestamp_us,
-                              int global_threshold);
+                              int& aruco_threshold_cache);
     RectI currentSearchRoi() const { return _last_roi; }
 
 private:
     RectI computeSearchRoi(uint64_t frame_timestamp_us) const;
     RectI clampToFrame(const RectI& r) const;
-    bool trackWithFullStroke(const uint8_t* gray,
-                             int global_threshold,
-                             uint64_t frame_timestamp_us,
-                             MarkerObservation& out);
+    bool trackWithWideTemplate(const uint8_t* gray,
+                               uint64_t frame_timestamp_us,
+                               MarkerObservation& out);
+    bool captureWideTemplate(const uint8_t* gray,
+                             const MarkerObservation& reference);
     bool trackWith1D(const uint8_t* previous_gray,
                      const uint8_t* gray,
                      uint64_t frame_timestamp_us,
@@ -49,14 +51,33 @@ private:
     float _vx_px_s = 0.0f;
     float _vy_px_s = 0.0f;
     int _acquire_decode_cooldown = 0;
-    uint32_t _stroke_successes = 0;
-    uint32_t _stroke_failures = 0;
+    uint32_t _wide_template_successes = 0;
+    uint32_t _wide_template_failures = 0;
     uint32_t _one_d_successes = 0;
     uint32_t _one_d_failures = 0;
     uint32_t _flow_successes = 0;
     uint32_t _flow_failures = 0;
     uint32_t _decode_successes = 0;
     uint32_t _reacquires = 0;
+
+    static constexpr int kWideTemplateCols =
+        (2 * appcfg::kWideTemplateHalfWidthPx) /
+            appcfg::kWideTemplateSampleStepPx + 1;
+    static constexpr int kWideTemplateSamples =
+        appcfg::kWideTemplateRows * kWideTemplateCols;
+
+    bool _wide_template_valid = false;
+    uint8_t _wide_template[kWideTemplateSamples] = {};
+    int _wide_template_mean = 0;
+    int _wide_template_center_y = 0;
+    int _wide_template_row_step = 4;
+    float _wide_template_side_px = 0.0f;
+
+    float _wide_last_sad = 0.0f;
+    int _wide_last_contrast = 0;
+    int _wide_last_x = 0;
+    int _wide_last_y = 0;
+    uint32_t _wide_last_us = 0;
 
     TrackFailReason _one_d_fail_reason = TrackFailReason::None;
     int _one_d_pred_x_px = 0;

@@ -15,13 +15,13 @@ switches to a predicted local ROI after lock.
 - native **grayscale/Y8** capture
 - two independent marker trackers
 - upper/lower horizontal acquisition bands
-- full-stroke current-frame constrained 1D detection as the normal fast path
-- coarse-to-fine X scan over the complete usable image width
-- only a ±4 px Y search using the already-known marker geometry
-- known ArUco 6x6 cell pattern scoring instead of connected components
-- previous-frame local 1D and two-level block tracking retained as safety fallbacks
-- ArUco fallback only when the constrained paths are not trustworthy
-- one shared full-frame Otsu threshold per camera frame for both A/B decoders
+- ultra-light previous-frame local 1D tracking as the normal fast path
+- compact real-image template captured from validated ArUco/pyramid frames
+- wide X recovery search only when local 1D fails
+- mean-brightness-normalized template SAD for exposure robustness
+- two-level local block tracking retained as the next safety fallback
+- ArUco fallback only when local/wide/pyramid paths are not trustworthy
+- full-frame Otsu computed lazily only on frames that actually need ArUco
 - lane-wide acquisition duty-cycled while fully lost to leave CPU headroom
 - expanding recovery ROI after misses
 - fallback to band acquisition instead of immediate full-frame search
@@ -108,24 +108,26 @@ The current acquisition geometry is approximately:
 +--------------------------------------+
 ```
 
-After the first ArUco ID lock, the normal path no longer assumes the next
-position must be close to the previous frame. The current image is searched
-across the complete usable X span. For each X candidate the firmware samples
-the known 6x6 ArUco cell locations using the already-known marker rotation,
-approximate Y center, and side length. X is searched at 2 px resolution first
-and only the best neighborhood is refined at 1 px resolution. Y is limited to
-a small ±4 px range.
+After the first ArUco ID lock, the normal path is again the ultra-light
+previous-frame local 1-D matcher. Hardware logs showed that this path is both
+much faster and more reliable than scanning the complete stroke every frame.
 
-This removes the old ±10 px primary-tracker displacement limit while avoiding a
-general 2-D component search. No four-corner re-fit or homography solve is
-needed on a successful full-stroke frame.
+At each validated ArUco lock (and after a refined two-level recovery), the
+firmware captures a compact real grayscale template from the actual marker
+image. If the local ±10 px matcher fails, this template is searched across the
+full usable X stroke with a coarse stride, then only the best neighborhood is
+refined at 1 px. Only a small Y range is searched. The comparison removes each
+candidate's mean brightness before SAD scoring, so exposure changes have less
+effect than direct raw-pixel comparison.
 
-If the full-stroke match is not trustworthy, the previous-frame local 1-D
-matcher and then the two-level X/Y tracker remain as safety fallbacks. ArUco
-decoding is duty-cycled after a known marker is lost. All ArUco scans in the
-same frame use the same threshold computed once from the complete 320×240
-grayscale frame, avoiding the ROI-dependent Otsu behavior found in hardware
-logs.
+This gives the pipeline two useful modes: normal frames stay on the very-light
+local path, while large jumps can still be recovered without immediately
+running connected-component ArUco detection. If wide-template recovery fails,
+the two-level X/Y tracker is tried next, then ArUco is duty-cycled.
+
+Full-frame Otsu is no longer computed on every camera frame. The first tracker
+that actually reaches ArUco computes the threshold lazily, and the second
+tracker can reuse it in that same frame.
 
 ## Serial output
 
@@ -141,10 +143,10 @@ Every ~100 ms the firmware emits one JSON object containing:
 - IMU deadline misses
 - max IMU step execution time
 - acceleration / gyro
-- marker validity/state and tracking source (`stroke1d` / `1d` / `pyramid` / `aruco` / `none`)
-- global Otsu threshold used by both marker decoders
-- full-stroke score/Hamming/border metrics and cumulative counters
-- fallback local tracking SAD and cumulative 1D/flow/decode/reacquire counters
+- marker validity/state and tracking source (`1d` / `wide1d` / `pyramid` / `aruco` / `none`)
+- lazy ArUco threshold (`-1` when no decoder ran in that frame)
+- wide-template SAD/contrast/search timing and cumulative counters
+- local tracking SAD and cumulative 1D/flow/decode/reacquire counters
 - pixel position and image-plane angle
 - constrained XYZ estimate
 - perspective asymmetry / tilt reliability
@@ -179,8 +181,9 @@ Core 0 / high priority
 Core 1 / non-deadline vision
     GC0308 frame
       -> Marker A / Marker B
-      -> current-frame full-stroke constrained 1D detection
-      -> previous-frame local 1D / two-level motion fallbacks
+      -> previous-frame local 1D normal tracking
+      -> wide real-template X recovery only after local failure
+      -> two-level local motion fallback
       -> ArUco acquire/reacquire only when needed
       -> constrained horizontal position measurement
       -> optional raw pose diagnostics
@@ -196,8 +199,8 @@ reduce visual update rate, not stall control.
 2. Flash from the Pages installer.
 3. Open serial at 921600 baud.
 4. Keep both markers still and confirm `valid=true`; the initial lock should report `source:"aruco"`.
-5. Move each marker horizontally and confirm successful following frames normally report `source:"stroke1d"`.
-6. Watch `stroke_score`, `stroke_hamming`, `stroke_border`, and `stroke_fail` while increasing motion speed.
+5. Move each marker horizontally and confirm normal following frames mostly report `source:"1d"`.
+6. Increase motion speed and confirm large-jump recovery can report `source:"wide1d"`; watch `wide_sad`, `wide_us`, and `wide_fail`.
 7. Confirm `cx_px` follows the motion while `cy_px` remains comparatively constant.
 8. Cover one marker and confirm recovery returns through ArUco acquisition.
 9. Watch `imu.misses` and `imu.max_step_us` while doing all of the above.
