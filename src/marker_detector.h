@@ -5,16 +5,6 @@
 
 class MarkerDetector {
 public:
-    struct StrokeMatch {
-        bool valid = false;
-        float center_x_px = 0.0f;
-        float center_y_px = 0.0f;
-        float score = 1.0e9f;
-        int hamming = 99;
-        int border_black = 0;
-        int rotation = -1;
-    };
-
     MarkerDetector(int frame_width, int frame_height);
     ~MarkerDetector();
 
@@ -28,13 +18,6 @@ public:
     // One global threshold per camera frame removes ROI-dependent Otsu changes
     // between A/B and between small/large recovery regions.
     int computeGlobalThreshold(const uint8_t* gray) const;
-
-    // Current-frame constrained search. X spans the full usable image width;
-    // Y and scale come from the already-identified mechanism geometry.
-    bool locateFullStroke1D(const uint8_t* gray, int threshold,
-                            int expected_id, int expected_rotation,
-                            float center_y_px, float side_px,
-                            StrokeMatch& out) const;
 
     // Re-measure the four outer square edges around an already-known
     // geometrically ordered TL/TR/BR/BL marker. This lets the fast tracker
