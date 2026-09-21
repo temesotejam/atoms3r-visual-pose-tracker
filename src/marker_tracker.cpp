@@ -428,6 +428,9 @@ bool MarkerTracker::trackWith1D(const uint8_t* previous_gray,
     out.one_d_tracked = true;
     out.flow_tracked = false;
     out.decoded_this_frame = false;
+    out.stroke_score = 0.0f;
+    out.stroke_hamming = 99;
+    out.stroke_border_black = 0;
     out.track_mean_sad = mean_sad;
     out.frame_timestamp_us = frame_timestamp_us;
     out.state = TrackState::Track;
@@ -680,8 +683,6 @@ MarkerObservation MarkerTracker::process(const uint8_t* gray,
     const bool was_recovery =
         _have_track && (_misses > 0 || can_flow);
 
-    const bool full_acquire =
-        !_have_track || _misses >= appcfg::kMaxMissesBeforeLaneAcquire;
     const int decode_period =
         _have_track
             ? appcfg::kRecoveryDecodeEveryNFrames
